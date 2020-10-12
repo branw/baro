@@ -195,6 +195,7 @@ static inline void baro__test_list_add(struct baro__test_list *list, struct baro
 struct baro__context {
   struct baro__test_list tests;
   struct baro__test *current_test;
+  int current_test_failed;
 
   size_t num_tests;
   size_t num_tests_failed;
@@ -219,6 +220,7 @@ extern struct baro__context baro__c;
 static inline void baro__context_create(struct baro__context *context) {
   baro__test_list_create(&context->tests, 128);
   context->current_test = NULL;
+  context->current_test_failed = 0;
 
   context->num_tests = context->num_tests_failed = 0;
   context->num_asserts = context->num_asserts_failed = 0;
@@ -247,10 +249,18 @@ static inline void baro__redirect_output(struct baro__context *context, int enab
   if (enable) {
     fflush(stdout);
     context->real_stdout = dup(1);
+#ifdef _WIN32
     freopen_s(&dummy, "NUL", "a", stdout);
+#else
+    freopen("NUL", "a", stdout);
+#endif
     setvbuf(stdout, baro__c.stdout_buffer, _IOFBF, BARO__STDOUT_BUF_SIZE);
   } else if (context->real_stdout != -1) {
+#ifdef _WIN32
     freopen_s(&dummy, "NUL", "a", stdout);
+#else
+    freopen("NUL", "a", stdout);
+#endif
     dup2(context->real_stdout, 1);
     setvbuf(stdout, NULL, _IONBF, 0);
   }
@@ -302,6 +312,7 @@ static inline void baro__assert(int condition, const char *desc, int required, c
   baro__c.num_asserts++;
 
   if (!condition) {
+    baro__c.current_test_failed = 1;
     baro__c.num_asserts_failed++;
 
     baro__redirect_output(&baro__c, 0);
@@ -425,11 +436,11 @@ int main(int argc, char *argv[]) {
   for (size_t i = 0; i < num_tests; i++) {
     struct baro__test *test = &baro__c.tests.tests[i];
     baro__c.current_test = test;
+    baro__c.current_test_failed = 0;
 
     int run_test = 1;
 
     if (setjmp(baro__c.env)) {
-      baro__c.num_tests_failed++;
       run_test = 0;
     }
 
@@ -446,6 +457,9 @@ int main(int argc, char *argv[]) {
     }
 
     baro__c.num_tests++;
+    if (baro__c.current_test_failed) {
+      baro__c.num_tests_failed++;
+    }
   }
 
   baro__redirect_output(&baro__c, 0);
