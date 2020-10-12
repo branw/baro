@@ -52,24 +52,28 @@ static inline void baro__tag_list_push(struct baro__tag_list *list, struct baro_
   list->tags[list->size++] = tag;
 }
 
-static inline struct baro__tag *baro__tag_list_pop(struct baro__tag_list *list) {
-  if (list->size > 0) {
-    return list->tags[--list->size];
+static inline int baro__tag_list_pop(struct baro__tag_list *list, struct baro__tag *tag) {
+  if (list->size == 0) {
+    return 0;
   }
-  abort();
+
+  if (tag) {
+    *tag = *list->tags[--list->size];
+  }
+
+  return 1;
 }
 
 static inline uint64_t baro__tag_list_hash(struct baro__tag_list *list) {
   uint64_t hash = 0;
 
   for (int i = 0; i < list->size; i++) {
-    uintptr_t a = (uintptr_t)list->tags[i];
-    a = (a+0x7ed55d16u) + (a<<12u);
-    a = (a^0xc761c23cu) ^ (a>>19u);
-    a = (a+0x165667b1u) + (a<<5u);
-    a = (a+0xd3a2646cu) ^ (a<<9u);
-    a = (a+0xfd7046c5u) + (a<<3u);
-    a = (a^0xb55a4f09u) ^ (a>>16u);
+    uint64_t a = (uint64_t)list->tags[i] + i;
+    a ^= a >> 33u;
+    a *= 0xff51afd7ed558ccdL;
+    a ^= a >> 33u;
+    a *= 0xc4ceb9fe1a85ec53L;
+    a ^= a >> 33u;
     hash ^= a;
   }
 
@@ -88,7 +92,7 @@ struct baro__hash_set {
 
 static inline void baro__hash_set_create(struct baro__hash_set *set) {
   set->nbits = 4;
-  set->capacity = 1u << set->nbits;
+  set->capacity = 1llu << set->nbits;
   set->mask = set->capacity - 1;
 
   set->hashes = calloc(set->capacity, sizeof(uint64_t));
@@ -122,7 +126,7 @@ static inline void baro__hash_set_add(struct baro__hash_set *set, uint64_t hash)
     size_t prev_capacity = set->capacity;
 
     set->nbits++;
-    set->capacity = 1u << set->nbits;
+    set->capacity = 1llu << set->nbits;
     set->mask = set->capacity - 1;
 
     set->hashes = calloc(set->capacity, sizeof(uint64_t));
@@ -231,18 +235,22 @@ static inline void baro__context_create(struct baro__context *context) {
 
 #ifdef _WIN32
 #include <io.h>
+#define dup _dup
+#define dup2 _dup2
 #else
 #include <unistd.h>
 #endif
 
 static inline void baro__redirect_output(struct baro__context *context, int enable) {
+  FILE *dummy = NULL;
+
   if (enable) {
     fflush(stdout);
     context->real_stdout = dup(1);
-    freopen("NUL", "a", stdout);
+    freopen_s(&dummy, "NUL", "a", stdout);
     setvbuf(stdout, baro__c.stdout_buffer, _IOFBF, BARO__STDOUT_BUF_SIZE);
   } else if (context->real_stdout != -1) {
-    freopen("NUL", "a", stdout);
+    freopen_s(&dummy, "NUL", "a", stdout);
     dup2(context->real_stdout, 1);
     setvbuf(stdout, NULL, _IONBF, 0);
   }
@@ -269,7 +277,7 @@ static inline int baro__check_subtest(struct baro__tag * const tag) {
   baro__tag_list_push(&baro__c.subtest_stack, tag);
   if (baro__hash_set_contains(&baro__c.passed_subtests,
                               baro__tag_list_hash(&baro__c.subtest_stack))) {
-    baro__tag_list_pop(&baro__c.subtest_stack);
+    baro__tag_list_pop(&baro__c.subtest_stack, NULL);
     return 0;
   }
 
@@ -284,7 +292,7 @@ static inline void baro__exit_subtest() {
       baro__hash_set_add(&baro__c.passed_subtests, baro__tag_list_hash(&baro__c.subtest_stack));
     }
 
-    baro__tag_list_pop(&baro__c.subtest_stack);
+    baro__tag_list_pop(&baro__c.subtest_stack, NULL);
   }
 }
 
