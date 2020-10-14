@@ -658,18 +658,116 @@ static inline void baro__assert_str(const char *lhs, const char *lhs_str, char c
 #endif
 
 #ifdef BARO_MAIN
+char *optarg;
+
+// A small getopt-like function for parsing short CLI arguments
+int getopt(int num_args, char * const *args, char const *opts) {
+  static char *arg = "";
+  static int cur_arg = 1;
+
+  if (!*arg) {
+    if (cur_arg >= num_args || *(arg = args[cur_arg]) != '-') {
+      arg = "";
+      return -1;
+    }
+    if (arg[1] && *++arg == '-') {
+      ++cur_arg;
+      arg = "";
+      fprintf(stderr, "Long options not supported\n");
+      return 0;
+    }
+  }
+
+  char opt;
+  char const *cur_opt;
+
+  if ((opt = *arg++) == ':' || !(cur_opt = strchr(opts, opt))) {
+    if (opt == '-') {
+      return -1;
+    }
+    if (!*arg) {
+      ++cur_arg;
+    }
+    fprintf(stderr, "Illegal option: %c\n", opt);
+    return 0;
+  }
+
+  if (*++cur_opt != ':') {
+    optarg = NULL;
+    if (!*arg) {
+      ++cur_arg;
+    }
+  } else {
+    if (*arg) {
+      optarg = arg;
+    } else if (num_args <= ++cur_arg) {
+      arg = "";
+      fprintf(stderr, "Option requires an argument: %c\n", opt);
+      return 0;
+    } else {
+      optarg = args[cur_arg];
+    }
+    arg = "";
+    ++cur_arg;
+  }
+
+  return opt;
+}
+
 int baro__init = 0;
 struct baro__context baro__c;
 
 int main(int argc, char *argv[]) {
+  size_t num_partitions = 1;
+  size_t cur_partition = 0;
+
+  int c;
+  while ((c = getopt(argc, argv, "hp:n:")) != -1) {
+    switch (c) {
+    case 'p':
+      num_partitions = atoi(optarg);
+      break;
+
+    case 'n':
+      cur_partition = atoi(optarg);
+      break;
+
+    case 'h':
+      printf("baro unit tests\n");
+      exit(0);
+
+    default:
+      fprintf(stderr, "Unknown arguments: run with -h for help\n");
+      exit(1);
+    }
+  }
+
   size_t num_tests = baro__c.tests.size;
-  printf("Running %zu test%s\n", num_tests, num_tests > 1 ? "s" : "");
+  if (num_partitions < 1 || num_partitions > num_tests) {
+    fprintf(stderr, "Invalid number of partitions: %zu\n", num_partitions);
+  }
+
+  size_t partition_size = (num_tests + (num_partitions - 1)) / num_partitions;
+
+  size_t first_test = partition_size * cur_partition;
+  size_t last_test = first_test + partition_size;
+  if (last_test >= num_tests) {
+    last_test = num_tests;
+  }
+
+  size_t num_tests_to_run = last_test - first_test;
+  printf("Running %zu out of %zu test%s\n", num_tests_to_run, num_tests,
+         num_tests > 1 ? "s" : "");
+
+  if (num_partitions > 1) {
+    printf("(Partition %zu: tests %zu to %zu)\n", cur_partition, first_test, last_test - 1);
+  }
 
   printf(BARO__SEPARATOR);
 
   baro__redirect_output(&baro__c, 1);
 
-  for (size_t i = 0; i < num_tests; i++) {
+  for (size_t i = first_test; i < last_test; i++) {
     struct baro__test *test = &baro__c.tests.tests[i];
     baro__c.current_test = test;
     baro__c.current_test_failed = 0;
