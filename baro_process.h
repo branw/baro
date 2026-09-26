@@ -87,7 +87,7 @@ static int baro__quote(char *dest, size_t capacity, const char *arg) {
 }
 #endif
 
-static int baro__process_start(struct baro__process *p, const char *exe, size_t id) {
+static int baro__process_start(struct baro__process *p, const char *exe, size_t id, int compiler_diagnostics) {
     memset(p, 0, sizeof(*p));
     p->out = tmpfile(); p->err = tmpfile();
     if (!p->out || !p->err) goto failed;
@@ -103,7 +103,7 @@ static int baro__process_start(struct baro__process *p, const char *exe, size_t 
     close(fd);
 #endif
     char index[32]; snprintf(index, sizeof(index), "%zu", id);
-    char *args[] = {(char *)exe, "--baro-child", index, "--baro-result", p->result_path, "-o", NULL};
+    char *args[] = {(char *)exe, "--baro-child", index, "--baro-result", p->result_path, "-o", "--diagnostics", compiler_diagnostics ? "compiler" : "plain", NULL};
 #ifdef _WIN32
     char command[32768]; size_t used = 0;
     for (int i = 0; args[i]; i++) {

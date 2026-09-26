@@ -38,11 +38,17 @@ if(BARO_SANITIZERS)
         target_link_options(baro PUBLIC -fsanitize=address,undefined)
     endif()
 endif()
+add_executable(baro_ctest baro_ctest.c)
+add_executable(baro::ctest ALIAS baro_ctest)
+set_target_properties(baro_ctest PROPERTIES EXPORT_NAME ctest)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Baro.cmake")
 include(GNUInstallDirs)
-install(TARGETS baro baro_main EXPORT baroTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(TARGETS baro baro_main baro_ctest EXPORT baroTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES baro.h DESTINATION include)
+install(FILES cmake/Baro.cmake cmake/BaroDiscoverTests.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/baro)
 install(EXPORT baroTargets NAMESPACE baro:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/baro)
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/baroConfig.cmake" "include(\"\${CMAKE_CURRENT_LIST_DIR}/baroTargets.cmake\")\n")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/baroConfig.cmake" "include(\"\${CMAKE_CURRENT_LIST_DIR}/baroTargets.cmake\")\ninclude(\"\${CMAKE_CURRENT_LIST_DIR}/Baro.cmake\")\n")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/baroConfig.cmake" DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/baro)
 
 if(NOT BARO_BUILD_TESTS)
@@ -137,3 +143,36 @@ add_test(NAME isolation COMMAND ${CMAKE_COMMAND}
     "-DPROGRAM=$<TARGET_FILE:baro_regressions>"
     "-DWORK=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolation.cmake")
+
+get_property(baro_multi GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+add_test(NAME discovery_integration COMMAND ${CMAKE_COMMAND}
+    "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/discovery-integration"
+    "-DGENERATOR=${CMAKE_GENERATOR}"
+    "-DMULTI=${baro_multi}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/discovery.cmake")
+if(NOT baro_multi)
+    find_program(BARO_NINJA ninja)
+    find_program(BARO_XCODEBUILD xcodebuild)
+    if(BARO_NINJA)
+        set(baro_multi_generator "Ninja Multi-Config")
+    elseif(APPLE AND BARO_XCODEBUILD)
+        set(baro_multi_generator "Xcode")
+    endif()
+    if(baro_multi_generator)
+        add_test(NAME discovery_multiconfig COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}"
+            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/discovery-multiconfig"
+            "-DGENERATOR=${baro_multi_generator}"
+            -DMULTI=ON
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/discovery.cmake")
+    endif()
+endif()
+
+add_executable(baro_discovery_probe tests/discovery_probe.c)
+add_test(NAME discovery_hardening COMMAND ${CMAKE_COMMAND}
+    "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/discovery-hardening"
+    "-DPROBE=$<TARGET_FILE:baro_discovery_probe>"
+    "-DRUNNER=$<TARGET_FILE:baro_ctest>"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/discovery_hardening.cmake")

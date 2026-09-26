@@ -20,3 +20,7 @@ add_executable(custom_runner custom.c test.c)
 target_link_libraries(custom_runner PRIVATE test_archive baro::baro)
 add_test(NAME custom_runner COMMAND custom_runner)
 add_test(NAME custom_isolated COMMAND custom_runner --isolate)
+
+baro_discover_tests(default_runner TEST_PREFIX "discovered::" LABELS integration TIMEOUT 5)
+
+baro_discover_tests(custom_runner TEST_PREFIX "" TEST_SUFFIX "::custom" TIMEOUT 5)

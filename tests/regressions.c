@@ -233,3 +233,7 @@ TEST("[descendants] timeout owns process tree") {
 #endif
     for (;;) sleep_ms(100);
 }
+
+TEST("[discovery] duplicate") { CHECK(1); }
+TEST("[discovery] duplicate") { CHECK(0); }
+TEST("[discovery] quote \" backslash \\ semicolon; newline\n${not_cmake} ]=]") { CHECK(1); }

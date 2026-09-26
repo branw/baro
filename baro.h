@@ -4,9 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Call once per process. Custom runners must dispatch child mode before setup.
+// Call once per process. Custom runners dispatch child/discovery modes before parent setup.
 int baro_run(int argc, char *argv[]);
 int baro_is_child(int argc, char *argv[]);
+int baro_is_discovery(int argc, char *argv[]);
 
 #ifdef BARO_ENABLE
 
@@ -213,6 +214,7 @@ static inline int baro__hash_set_contains(
 }
 
 struct baro__test {
+    size_t id;
     int expect_abort;
     const struct baro__tag *tag;
 
@@ -309,6 +311,7 @@ struct baro__context {
     sigjmp_buf env;
 #endif
 
+    int compiler_diagnostics;
     int suppress_stdout;
     int real_stdout;
     FILE *stdout_capture;
@@ -547,6 +550,13 @@ static inline char const *baro__file_name(
     return last;
 }
 
+static inline void baro__report_location(const char *file, int line) {
+    if (baro__c.compiler_diagnostics)
+        printf("%s:%d: error: assertion failed\n", file, line);
+    else
+        printf("At %s:%d\n", baro__file_name(file), line);
+}
+
 static inline void baro__assert_failed(
         enum baro__assert_type const type, int const jump) {
     struct baro__test const * const test = baro__c.current_test;
@@ -600,7 +610,7 @@ static inline void baro__assert1(
     printf(BARO__RED "%s failed:%s\n" BARO__UNSET_COLOR, assert_type, desc);
     printf("    %s%s\n", value_str, op);
     printf("==> %zu%s\n", value, op);
-    printf("At %s:%d\n", baro__file_name(file_path), line_num);
+    baro__report_location(file_path, line_num);
 
     baro__assert_failed(type, 1);
 }
@@ -639,7 +649,7 @@ static inline void baro__assert2(
     char const * const assert_type = (type == BARO__ASSERT_REQUIRE ? "Require" : "Check");
     printf(BARO__RED "%s failed:%s\n" BARO__UNSET_COLOR, assert_type, desc);
     printf("    %s %s %s\n", lhs_str, op, rhs_str);
-    printf("At %s:%d\n", baro__file_name(file_path), line_num);
+    baro__report_location(file_path, line_num);
 
     baro__assert_failed(type, 1);
 }
@@ -698,7 +708,7 @@ static inline void baro__assert_str(
     printf(BARO__RED "%s%s failed:%s\n" BARO__UNSET_COLOR, assert_type, sensitivity, desc);
     printf("    %s %*s%s %s\n", lhs_str, (int)str_padding, "", op, rhs_str);
     printf("==> %s%s%s %*s%s %s%s%s\n", lhs_wrap, lhs, lhs_wrap, (int)expanded_padding, "", op, rhs_wrap, rhs, rhs_wrap);
-    printf("At %s:%d\n", baro__file_name(file_path), line_num);
+    baro__report_location(file_path, line_num);
 
     baro__assert_failed(type, 1);
 }
@@ -767,7 +777,7 @@ static inline void baro__assert_arr(
     printf(BARO__RED "%s array failed:%s\n" BARO__UNSET_COLOR, assert_type, desc);
     printf("    %s[%zu] %s %s[%zu]\n", lhs_str, element_index, op, rhs_str, element_index);
     printf("==> 0x%s %s 0x%s\n", lhs_val_str, op, rhs_val_str);
-    printf("At %s:%d\n", baro__file_name(file_path), line_num);
+    baro__report_location(file_path, line_num);
 
     free(lhs_val_str);
     free(rhs_val_str);

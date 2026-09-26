@@ -43,6 +43,54 @@ static void baro__child_abort(int signum) {
 #endif
 }
 
+// The adapter checks this private record AND the process exit status. Writes
+// from the SIGABRT handler use only async-signal-safe operations on POSIX.
+static volatile sig_atomic_t baro__ctest_result_fd = -1;
+static int baro__ctest_complete(void) {
+    if (baro__ctest_result_fd < 0) return 1; /* Direct debugger invocation. */
+#ifdef _WIN32
+    return _write(baro__ctest_result_fd, "BARO_CTEST_OK\n", 14) == 14;
+#else
+    return write(baro__ctest_result_fd, "BARO_CTEST_OK\n", 14) == 14;
+#endif
+}
+static void baro__ctest_abort(int signum) {
+    (void)signum;
+    _exit(!baro__failure_pending && baro__ctest_complete() ? EXIT_SUCCESS : EXIT_FAILURE);
+}
+
+static void baro__json_string(const char *text, size_t size) {
+    putchar('"');
+    for (size_t i = 0; i < size; i++) {
+        unsigned char c = (unsigned char)text[i];
+        if (c == '"' || c == '\\') { putchar('\\'); putchar(c); }
+        else if (c < 32) printf("\\u%04x", c);
+        else putchar(c);
+    }
+    putchar('"');
+}
+
+static void baro__json_test(const struct baro__test *test) {
+    printf("{\"id\":%zu,\"name\":", test->id);
+    baro__json_string(test->tag->desc, strlen(test->tag->desc));
+    printf(",\"file\":");
+    baro__json_string(test->tag->file_path, strlen(test->tag->file_path));
+    printf(",\"line\":%d,\"expect_abort\":%s,\"tags\":[", test->tag->line_num,
+           test->expect_abort ? "true" : "false");
+    int comma = 0;
+    const char *cursor = test->tag->desc;
+    while ((cursor = strchr(cursor, '[')) != NULL) {
+        const char *end = strchr(++cursor, ']');
+        if (!end) break;
+        if (cursor != end) {
+            if (comma++) putchar(',');
+            baro__json_string(cursor, (size_t)(end - cursor));
+        }
+        cursor = end + 1;
+    }
+    printf("]}");
+}
+
 static void baro__xml(FILE *out, const char *text) {
     for (const unsigned char *p = (const unsigned char *)text; *p; ++p) {
         switch (*p) {
@@ -167,18 +215,34 @@ int baro_run(
     char *raw_tag_filters = NULL;
     const char *exact_name = NULL, *junit_path = NULL;
     int list_tests = 0, allow_empty = 0, isolate = 0;
-    size_t child_id = 0, jobs = 1;
+    size_t child_id = 0, jobs = 1, test_id = 0;
+    int compiler_diagnostics = 0, ctest_mode = 0;
     double timeout = 0;
     const char *child_result = NULL;
     char *baro__optarg = NULL;
 
     if (!baro__c.tests.tests) baro__context_create(&baro__c);
+    baro__test_list_sort(&baro__c.tests);
+    for (size_t i = 0; i < baro__c.tests.size; i++) baro__c.tests.tests[i].id = i + 1;
     size_t const total_num_tests = baro__c.tests.size;
 
     // Parse short clusters and long options without exporting getopt symbols.
     for (int arg = 1; arg < argc; arg++) {
         const char *option = argv[arg];
         if (strncmp(option, "--", 2) == 0) {
+            if (!strcmp(option, "--ctest")) { ctest_mode = 1; continue; }
+            if (!strcmp(option, "--test-id")) {
+                if (++arg == argc || !(test_id = baro__positive(argv[arg]))) return EXIT_FAILURE;
+                continue;
+            }
+            if (!strcmp(option, "--diagnostics")) {
+                if (++arg == argc) return EXIT_FAILURE;
+                if (!strcmp(argv[arg], "compiler")) compiler_diagnostics = 1;
+                else if (!strcmp(argv[arg], "plain")) compiler_diagnostics = 0;
+                else { fprintf(stderr, "Expected diagnostics: plain or compiler\n"); return EXIT_FAILURE; }
+                continue;
+            }
+            if (!strcmp(option, "--list-tests-json")) { list_tests = 2; continue; }
             if (!strcmp(option, "--jobs") || !strcmp(option, "--timeout")) {
                 if (++arg == argc) return EXIT_FAILURE;
                 if (!strcmp(option, "--jobs")) { jobs = baro__positive(argv[arg]); if (!jobs) return EXIT_FAILURE; }
@@ -269,6 +333,10 @@ int baro_run(
                    "  --jobs <count>       Concurrent isolated tests (default 1)\n"
                    "  --timeout <seconds>  Isolated test deadline (s or ms suffix)\n"
                    "  --isolate            Run each test in a fresh child process\n"
+                   "  --ctest              Single-test adapter mode (CTest owns process)\n"
+                   "  --test-id <id>       Select one test from this executable inventory\n"
+                   "  --list-tests-json    Print versioned JSON inventory\n"
+                   "  --diagnostics <mode> plain or compiler (clickable source locations)\n"
                    "  --list-tests         List selected tests without executing\n"
                    "  --test <name>        Select an exact test description\n"
                    "  --allow-empty        Permit zero selected tests\n"
@@ -286,15 +354,29 @@ int baro_run(
 
     }
 
+    if (ctest_mode) suppress_stdout = 0; /* CTest captures this process output. */
+    if (ctest_mode && (!test_id || isolate || recover_abort || child_id || child_result ||
+        exact_name || raw_tag_filters || list_tests || junit_path || jobs != 1 || timeout > 0 ||
+        cur_partition != 1 || num_partitions != 1)) {
+        fprintf(stderr, "--ctest requires one --test-id and CTest-owned execution\n");
+        return EXIT_FAILURE;
+    }
     if (!isolate && (jobs != 1 || timeout > 0)) {
         fprintf(stderr, "--jobs and --timeout require --isolate\n"); return EXIT_FAILURE;
     }
     if (isolate && recover_abort) {
         fprintf(stderr, "--recover-abort is only for in-process tests\n"); return EXIT_FAILURE;
     }
+    if (ctest_mode && getenv("BARO_CTEST_RESULT")) {
+        FILE *channel = fopen(getenv("BARO_CTEST_RESULT"), "wb");
+        if (!channel) return EXIT_FAILURE;
+        baro__ctest_result_fd = BARO__DUP(BARO__FILENO(channel));
+        fclose(channel);
+        if (baro__ctest_result_fd < 0) return EXIT_FAILURE;
+    }
     if (child_id || child_result) {
         if (!child_id || !child_result || child_id > total_num_tests || isolate || recover_abort ||
-            raw_tag_filters || exact_name || list_tests || junit_path || num_partitions != 1 || cur_partition != 1) return EXIT_FAILURE;
+            raw_tag_filters || exact_name || test_id || list_tests || junit_path || num_partitions != 1 || cur_partition != 1) return EXIT_FAILURE;
         FILE *channel = fopen(child_result, "wb");
         if (!channel) return EXIT_FAILURE;
         baro__child_result_fd = BARO__DUP(BARO__FILENO(channel));
@@ -386,7 +468,7 @@ int baro_run(
         memcpy(&tests, &baro__c.tests, sizeof(baro__c.tests));
     }
 
-    if (exact_name) {
+    if (exact_name || test_id) {
         if (tests.tests == baro__c.tests.tests) {
             baro__test_list_create(&tests, total_num_tests ? total_num_tests : 1);
             for (size_t i = 0; i < total_num_tests; i++)
@@ -394,7 +476,8 @@ int baro_run(
         }
         size_t selected = 0;
         for (size_t i = 0; i < tests.size; i++)
-            if (!strcmp(tests.tests[i].tag->desc, exact_name)) tests.tests[selected++] = tests.tests[i];
+            if ((!exact_name || !strcmp(tests.tests[i].tag->desc, exact_name)) &&
+                (!test_id || tests.tests[i].id == test_id)) tests.tests[selected++] = tests.tests[i];
         tests.size = selected;
     }
     if (!tests.size && !allow_empty) {
@@ -429,11 +512,16 @@ int baro_run(
     size_t const last_test = child_id ? child_id : first_test + partition_size + (partition_index < remainder);
 
     if (list_tests) {
-        for (size_t i = first_test; i < last_test; i++) puts(tests.tests[i].tag->desc);
+        if (list_tests == 2) printf("{\"version\":1,\"tests\":[");
+        for (size_t i = first_test; i < last_test; i++) {
+            if (list_tests == 1) puts(tests.tests[i].tag->desc);
+            else { if (i != first_test) putchar(','); baro__json_test(&tests.tests[i]); }
+        }
+        if (list_tests == 2) puts("]}");
         if (tests.tests != baro__c.tests.tests) free(tests.tests);
         return EXIT_SUCCESS;
     }
-    if (!isolate && !child_id) {
+    if (!isolate && !child_id && !ctest_mode) {
         for (size_t i = first_test; i < last_test; i++) {
             if (tests.tests[i].expect_abort) {
                 fprintf(stderr, "Expected-abort tests require --isolate\n");
@@ -455,6 +543,7 @@ int baro_run(
     printf(BARO__SEPARATOR);
     }
 
+    baro__c.compiler_diagnostics = compiler_diagnostics;
     baro__c.suppress_stdout = suppress_stdout;
     if (!isolate) baro__redirect_output(&baro__c, suppress_stdout);
     if (suppress_stderr && !isolate) {
@@ -475,11 +564,8 @@ int baro_run(
                 struct baro__slot *slot = &slots[worker];
                 if (!slot->active && !stopped && next < last_test) {
                     slot->index = next++;
-                    slot->id = 0;
-                    for (size_t j = 0; j < total_num_tests; j++)
-                        if (baro__c.tests.tests[j].tag == tests.tests[slot->index].tag &&
-                            baro__c.tests.tests[j].func == tests.tests[slot->index].func) { slot->id = j + 1; break; }
-                    if (baro__process_start(&slot->process, exe, slot->id)) {
+                    slot->id = tests.tests[slot->index].id;
+                    if (baro__process_start(&slot->process, exe, slot->id, compiler_diagnostics)) {
                         slot->active = 1; active++;
                     } else {
                         results[slot->index] = (struct baro__result){1, 1, 0, 0, "Could not launch test"};
@@ -522,7 +608,16 @@ int baro_run(
             struct baro__test const * const test = &tests.tests[i];
             size_t const before_asserts = baro__c.num_asserts;
             size_t const before_failed = baro__c.num_asserts_failed;
+            if (ctest_mode && test->expect_abort) signal(SIGABRT, baro__ctest_abort);
             baro__run_one(test, recover_abort);
+            if (ctest_mode && test->expect_abort) {
+                signal(SIGABRT, SIG_DFL);
+                baro__c.current_test_failed = 1;
+                baro__failure_pending = 1;
+                baro__redirect_output(&baro__c, 0);
+                printf("Expected SIGABRT was not raised\n");
+                baro__report_location(test->tag->file_path, test->tag->line_num);
+            }
             results[i].ran = 1;
             results[i].failed = baro__c.current_test_failed;
             results[i].asserts = baro__c.num_asserts - before_asserts;
@@ -578,14 +673,37 @@ int baro_run(
     free(results);
     if (tests.tests != baro__c.tests.tests) free(tests.tests);
     free(raw_tag_filters);
+    if (ctest_mode && !baro__c.num_tests_failed && report_ok)
+        report_ok = baro__ctest_complete();
+    if (baro__ctest_result_fd >= 0) {
+        BARO__CLOSE(baro__ctest_result_fd);
+        baro__ctest_result_fd = -1;
+    }
     return baro__c.num_tests_failed || !report_ok ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
-int baro_is_child(int argc, char *argv[]) {
+static int baro__has_mode(int argc, char *argv[], const char *mode, const char *alternate) {
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--baro-child") == 0) return 1;
+        const char *arg = argv[i];
+        if (!strcmp(arg, mode) || (alternate && !strcmp(arg, alternate))) return 1;
+        if (!strcmp(arg, "--test") || !strcmp(arg, "--test-id") || !strcmp(arg, "--junit") ||
+            !strcmp(arg, "--diagnostics") || !strcmp(arg, "--jobs") || !strcmp(arg, "--timeout") ||
+            !strcmp(arg, "--baro-child") || !strcmp(arg, "--baro-result")) { i++; continue; }
+        if (arg[0] == '-' && arg[1] != '-') {
+            for (const char *p = arg + 1; *p; p++) {
+                if (*p == 't' || *p == 'n' || *p == 'p') { if (!p[1]) i++; break; }
+            }
+        }
     }
     return 0;
+}
+
+int baro_is_child(int argc, char *argv[]) {
+    return baro__has_mode(argc, argv, "--baro-child", NULL);
+}
+
+int baro_is_discovery(int argc, char *argv[]) {
+    return baro__has_mode(argc, argv, "--list-tests", "--list-tests-json");
 }
 
 static void baro__typed_failure(int hard, const char *file, int line, const char *values) {
@@ -593,7 +711,8 @@ static void baro__typed_failure(int hard, const char *file, int line, const char
     baro__c.current_test_failed = 1;
     baro__c.num_asserts_failed++;
     baro__redirect_output(&baro__c, 0);
-    printf("%s failed: %s\nAt %s:%d\n", hard ? "Require" : "Check", values, baro__file_name(file), line);
+    printf("%s failed: %s\n", hard ? "Require" : "Check", values);
+    baro__report_location(file, line);
     baro__assert_failed(hard ? BARO__ASSERT_REQUIRE : BARO__ASSERT_CHECK, 1);
 }
 void baro__typed_int(intmax_t a, intmax_t b, int hard, const char *file, int line) {
