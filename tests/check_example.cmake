@@ -1,0 +1,11 @@
+execute_process(COMMAND "${PROGRAM}" ${ARGS}
+    RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(NOT "${status}" STREQUAL "${EXPECTED_STATUS}")
+    message(FATAL_ERROR "Expected exit ${EXPECTED_STATUS}, got ${status}\n${output}${error}")
+endif()
+file(READ "${EXPECTED_OUTPUT}" expected)
+string(REPLACE "\r\n" "\n" actual "${output}${error}")
+string(REPLACE "\r\n" "\n" expected "${expected}")
+if(NOT "${actual}" STREQUAL "${expected}")
+    message(FATAL_ERROR "Output mismatch for ${PROGRAM}\nExpected:\n${expected}\nActual:\n${actual}")
+endif()

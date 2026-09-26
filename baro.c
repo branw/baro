@@ -79,7 +79,7 @@ static void handle_signal(int signum) {
 
         // Return to the main loop because we can't do anything useful while
         // still in the signal handler
-        longjmp(baro__c.env, BARO__JMP_SIGABRT);
+        BARO__LONGJMP(baro__c.env, BARO__JMP_SIGABRT);
     }
 }
 
@@ -90,6 +90,7 @@ int main(
     int suppress_stdout = 1;
     int suppress_stderr = 0;
     int stop_after_failure = 0;
+    int recover_abort = 0;
     size_t num_partitions = 1;
     size_t cur_partition = 1;
     char *raw_tag_filters = NULL;
@@ -98,8 +99,9 @@ int main(
 
     // Parse command line options
     int c;
-    while ((c = getopt(argc, argv, "haoesp:n:t:")) != -1) {
+    while ((c = getopt(argc, argv, "hraoesp:n:t:")) != -1) {
         switch (c) {
+        case 'r': recover_abort = 1; break;
         case 'p':
             num_partitions = strtol(optarg, NULL, 10);
             break;
@@ -149,14 +151,14 @@ int main(
 
         default:
             fprintf(stderr, "Unknown arguments: run with -h for help\n");
-            return -1;
+            return EXIT_FAILURE;
         }
     }
 
     if (total_num_tests == 0) {
         fprintf(stderr, "Zero test cases were found! This usually means that "
                         "something went wrong with test registration.\n");
-        return -1;
+        return EXIT_FAILURE;
     }
 
     // Filter out tests
@@ -195,7 +197,7 @@ int main(
             size_t const filter_len = strlen(p);
             if (filter_len == 0) {
                 fprintf(stderr, "Invalid filter list\n");
-                return -1;
+                return EXIT_FAILURE;
             }
 
             filters[i] = malloc(filter_len + 2 + 1);
@@ -239,13 +241,13 @@ int main(
     if (num_tests > 0 && (num_partitions < 1 || num_partitions > num_tests)) {
         fprintf(stderr, "Invalid number of partitions %zu, value should be"
                         "between 1 and %zu\n", num_partitions, num_tests);
-        return -1;
+        return EXIT_FAILURE;
     }
 
     if (cur_partition < 1 || cur_partition > num_partitions) {
         fprintf(stderr, "Invalid current partition %zu, value should between 1"
                         " and %zu inclusive\n", cur_partition, num_partitions);
-        return -1;
+        return EXIT_FAILURE;
     }
 
     // Sort the list of tests so that we get a deterministic order of execution
@@ -253,12 +255,12 @@ int main(
     baro__test_list_sort(&tests);
 
     // Partition the tests if we are in a multiprocess workflow
-    size_t const partition_size = (num_tests + (num_partitions - 1)) / num_partitions;
-    size_t const first_test = partition_size * (cur_partition - 1);
-    size_t last_test = first_test + partition_size;
-    if (last_test >= num_tests) {
-        last_test = num_tests;
-    }
+    size_t const partition_size = num_tests / num_partitions;
+    size_t const remainder = num_tests % num_partitions;
+    size_t const partition_index = cur_partition - 1;
+    size_t const first_test = partition_size * partition_index +
+            (partition_index < remainder ? partition_index : remainder);
+    size_t const last_test = first_test + partition_size + (partition_index < remainder);
 
     size_t const num_tests_to_run = last_test - first_test;
     printf("Running %zu out of %zu test%s (of %zu total)\n", num_tests_to_run, num_tests,
@@ -269,6 +271,7 @@ int main(
 
     printf(BARO__SEPARATOR);
 
+    baro__c.suppress_stdout = suppress_stdout;
     baro__redirect_output(&baro__c, suppress_stdout);
     if (suppress_stderr) {
         baro__disable_output(&baro__c, stderr);
@@ -283,7 +286,7 @@ int main(
 
         int run_test = 1;
 
-        int const jmp_val = setjmp(baro__c.env);
+        int const jmp_val = BARO__SETJMP(baro__c.env);
         // Recover from REQUIRE assertion failures
         if (jmp_val == BARO__JMP_REQUIRE) {
             run_test = 0;
@@ -291,6 +294,7 @@ int main(
         // Recover from SIGABRT failures
         else if (jmp_val == BARO__JMP_SIGABRT) {
             baro__c.current_test_failed = 1;
+            baro__c.num_asserts++;
             baro__c.num_asserts_failed++;
 
             baro__redirect_output(&baro__c, 0);
@@ -302,7 +306,7 @@ int main(
         }
         // Otherwise, install a SIGABRT handler
         else {
-            set_sigabrt_handler(handle_signal);
+            if (recover_abort) set_sigabrt_handler(handle_signal);
         }
 
         while (run_test) {
@@ -312,6 +316,7 @@ int main(
             baro__tag_list_clear(&baro__c.subtest_stack);
 
             test->func();
+            baro__run_cleanups();
 
             // Keep looping until all subtest permutations have been visited
             if (!baro__c.should_reenter_subtest) {
@@ -319,6 +324,8 @@ int main(
             }
         }
 
+        baro__run_cleanups();
+        if (recover_abort) set_sigabrt_handler(NULL);
         baro__c.num_tests_ran++;
         if (baro__c.current_test_failed) {
             baro__c.num_tests_failed++;
@@ -333,8 +340,10 @@ int main(
             baro__redirect_output(&baro__c, suppress_stdout);
         }
 
-        // Wipe the saved output between tests
-        memset(baro__c.stdout_buffer, 0, BARO__STDOUT_BUF_SIZE);
+        // Discard successful output and start the next test with empty capture.
+        baro__redirect_output(&baro__c, 0);
+        baro__c.stdout_size = 0;
+        baro__redirect_output(&baro__c, suppress_stdout);
     }
 
     baro__redirect_output(&baro__c, 0);
@@ -349,5 +358,5 @@ int main(
            baro__c.num_asserts, baro__c.num_asserts - baro__c.num_asserts_failed,
            baro__c.num_asserts_failed);
 
-    return (int) baro__c.num_tests_failed;
+    return baro__c.num_tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;
 }

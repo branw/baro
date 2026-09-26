@@ -16,4 +16,4 @@ At assert.c:23
   In: some other test (assert.c:22)
 ============================================================
 tests:       3 total |     0 passed |     3 failed
-asserts:     3 total |     0 passed |     3 failed
+asserts:     4 total |     1 passed |     3 failed

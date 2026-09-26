@@ -87,7 +87,7 @@ A C99 unit testing framework that is:
      add_test(app tests)
      ```
 
-3. Define `BARO_ENABLED` for this new build target only (and _not_ for any 
+3. Define `BARO_ENABLE` for this new build target only (and _not_ for any
    non-test targets). This allows the test code to be optimized away in
    non-test builds.
    - With `gcc`/`clang`, pass `-DBARO_ENABLE`:
@@ -107,7 +107,6 @@ A C99 unit testing framework that is:
     ============================================================
     Check less than failed:
       magic_frombobulate(magic, panacea) < 50
-    ==> 62 < 50
     At magic.c:25
     In: [magic] frombobulation (magic.c:11)
       Under: with elixir (magic.c:16)
@@ -147,21 +146,14 @@ cause the current test to end immediately.
 |`REQUIRE_STR_ICASE_EQ(a, b)`|`assert(!strcmpi(a, b))`|
 |`REQUIRE_STR_ICASE_NE(a, b)`|`assert(strcmpi(a, b) != 0)`|
 
-Note that `REQUIRE(a < b)` is functionally equivalent to `REQUIRE_LT(a, b)`.
-The more specific set of functions will provide a bit more context to failures
-however:
+`REQUIRE(a < b)` and `REQUIRE_LT(a, b)` evaluate the same C comparison.
+Numeric assertions preserve the operands' types and evaluate each operand
+once. Comparison failures report the expression and source location; string
+and array assertions also display the compared values.
 
-<table><thead><tr>
-<th><code>REQUIRE(a < b)</code></th>
-<th><code>REQUIRE_LT(a, b)</code></th>
-</tr></thead><tbody><tr>
-<td><pre>Require failed:
-    a < b != 0
-==> 0 != 0</pre></td>
-<td><pre>Require failed:
-    a < b
-==> 2 < 1</pre></td>
-</tr></tbody></table>
+String assertions treat two null pointers as equal, and a null pointer and any
+string (including an empty string) as unequal. Failed comparisons display null
+operands as `[null]`.
 
 All these macros also accept a description as an additional parameter:
 
@@ -262,6 +254,10 @@ The test runner accepts a few arguments:
 - `-o` shows all standard **o**utput (`stdout`), even for passing tests
   - By default, only the last 4096 characters of standard output will be
     shown only for failing tests
+  - Captured output uses a temporary file and includes explicitly flushed output.
+    Each failure reports the last 4096 bytes since the previous failure in that
+    test; output from passing tests is discarded. Temporary disk usage grows
+    with output until the next failure or the end of the test.
 - `-e` suppresses all standard **e**rror (`stderr`) output
   - `stderr` output will not be shown, even for failing tests, in this case
 - `-s` will cause the test suite to **s**top after the first failure
@@ -275,6 +271,10 @@ execution by creating multiple processes with the partitioning arguments:
 
 - `-n <current_partition>` sets the current partition index (1-based)
 - `-p <partition_count>` sets the total number of partitions to make (1-based)
+
+Partitions are contiguous and differ in size by at most one test. When the
+test count does not divide evenly, the earlier partitions receive one extra
+test each.
 
 For example, if we have 100 tests and want to partition across five processes:
 ```bash

@@ -14,73 +14,61 @@ At basic.c:8
 ============================================================
 Check failed:
     0 == 1
-==> 0 == 1
 At basic.c:11
   In: check fails soft (basic.c:3)
 ============================================================
 Check failed:
     1 == 0
-==> 1 == 0
 At basic.c:12
   In: check fails soft (basic.c:3)
 ============================================================
 Check failed:
     0 != 0
-==> 0 != 0
 At basic.c:15
   In: check fails soft (basic.c:3)
 ============================================================
 Check failed:
     1 != 1
-==> 1 != 1
 At basic.c:18
   In: check fails soft (basic.c:3)
 ============================================================
 Check failed:
     0 < 0
-==> 0 < 0
 At basic.c:20
   In: check fails soft (basic.c:3)
 ============================================================
 Check failed:
     1 < 0
-==> 1 < 0
 At basic.c:22
   In: check fails soft (basic.c:3)
 ============================================================
 Check failed:
     1 < 1
-==> 1 < 1
 At basic.c:23
   In: check fails soft (basic.c:3)
 ============================================================
 Check failed:
     1 <= 0
-==> 1 <= 0
 At basic.c:27
   In: check fails soft (basic.c:3)
 ============================================================
 Check failed:
     0 >= 1
-==> 0 >= 1
 At basic.c:31
   In: check fails soft (basic.c:3)
 ============================================================
 Check failed:
     0 > 0
-==> 0 > 0
 At basic.c:35
   In: check fails soft (basic.c:3)
 ============================================================
 Check failed:
     0 > 1
-==> 0 > 1
 At basic.c:36
   In: check fails soft (basic.c:3)
 ============================================================
 Check failed:
     1 > 1
-==> 1 > 1
 At basic.c:38
   In: check fails soft (basic.c:3)
 ============================================================
