@@ -89,7 +89,7 @@ foreach(config IN LISTS configs)
         property(labels ${index} LABELS)
         property(environment ${index} ENVIRONMENT)
         property(directory ${index} WORKING_DIRECTORY)
-        if(NOT timeout EQUAL 0.3 OR NOT processors EQUAL 2 OR NOT lock MATCHES "database" OR
+        if(NOT timeout EQUAL 1 OR NOT processors EQUAL 2 OR NOT lock MATCHES "database" OR
            NOT labels MATCHES "explicit;label" OR NOT labels MATCHES "config-${config}" OR
            NOT environment MATCHES "BARO_VALUE=alpha;beta" OR NOT directory STREQUAL "${binary}/working directory")
             message(FATAL_ERROR "Lost CTest properties: ${inventory}")

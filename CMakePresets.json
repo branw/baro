@@ -1,0 +1,53 @@
+{
+  "version": 2,
+  "cmakeMinimumRequired": {"major": 3, "minor": 20, "patch": 0},
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/${presetName}",
+      "cacheVariables": {
+        "BARO_BUILD_TESTS": "ON",
+        "BARO_SANITIZERS": "OFF",
+        "BARO_COVERAGE": "OFF"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "inherits": "base",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "inherits": "base",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}
+    },
+    {
+      "name": "sanitizers",
+      "displayName": "Debug with sanitizers",
+      "inherits": "debug",
+      "cacheVariables": {"BARO_SANITIZERS": "ON"}
+    },
+    {
+      "name": "coverage",
+      "displayName": "Debug with coverage (GCC or Clang)",
+      "inherits": "debug",
+      "cacheVariables": {"BARO_COVERAGE": "ON"}
+    }
+  ],
+  "buildPresets": [
+    {"name": "debug", "configurePreset": "debug", "jobs": 4},
+    {"name": "release", "configurePreset": "release", "jobs": 4},
+    {"name": "sanitizers", "configurePreset": "sanitizers", "jobs": 4},
+    {"name": "coverage", "configurePreset": "coverage", "jobs": 4, "targets": ["coverage"]}
+  ],
+  "testPresets": [
+    {"name": "debug", "configurePreset": "debug", "output": {"outputOnFailure": true}, "execution": {"noTestsAction": "error"}},
+    {"name": "release", "configurePreset": "release", "output": {"outputOnFailure": true}, "execution": {"noTestsAction": "error"}},
+    {"name": "sanitizers", "configurePreset": "sanitizers", "output": {"outputOnFailure": true}, "execution": {"noTestsAction": "error"}},
+    {"name": "coverage", "configurePreset": "coverage", "output": {"outputOnFailure": true}, "execution": {"noTestsAction": "error"}}
+  ]
+}

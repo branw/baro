@@ -8,6 +8,7 @@ if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     set(baro_top_level ON)
 endif()
 option(BARO_BUILD_TESTS "Build Baro's own tests" ${baro_top_level})
+option(BARO_COVERAGE "Build developer coverage instrumentation and reports" OFF)
 option(BARO_SANITIZERS "Instrument Baro and its consumers with sanitizers" OFF)
 
 add_library(baro STATIC baro.c)
@@ -41,6 +42,15 @@ endif()
 add_executable(baro_ctest baro_ctest.c)
 add_executable(baro::ctest ALIAS baro_ctest)
 set_target_properties(baro_ctest PROPERTIES EXPORT_NAME ctest)
+if(BARO_COVERAGE)
+    if(NOT baro_top_level OR NOT BARO_BUILD_TESTS OR BARO_SANITIZERS OR NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        message(FATAL_ERROR "BARO_COVERAGE requires a top-level GCC/Clang test build without sanitizers")
+    endif()
+    target_compile_options(baro PUBLIC --coverage -O0 -g)
+    target_link_options(baro PUBLIC --coverage)
+    target_compile_options(baro_ctest PRIVATE --coverage -O0 -g)
+    target_link_options(baro_ctest PRIVATE --coverage)
+endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Baro.cmake")
 include(GNUInstallDirs)
 install(TARGETS baro baro_main baro_ctest EXPORT baroTargets
@@ -176,3 +186,11 @@ add_test(NAME discovery_hardening COMMAND ${CMAKE_COMMAND}
     "-DPROBE=$<TARGET_FILE:baro_discovery_probe>"
     "-DRUNNER=$<TARGET_FILE:baro_ctest>"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/discovery_hardening.cmake")
+
+add_test(NAME adapter_contract COMMAND ${CMAKE_COMMAND}
+    "-DPROGRAM=$<TARGET_FILE:baro_regressions>" "-DADAPTER=$<TARGET_FILE:baro_ctest>"
+    "-DWORK=${CMAKE_CURRENT_BINARY_DIR}" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/adapter.cmake")
+
+if(BARO_COVERAGE)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/BaroCoverage.cmake")
+endif()

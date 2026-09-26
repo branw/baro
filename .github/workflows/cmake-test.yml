@@ -49,13 +49,30 @@ jobs:
             python -m pip install 'cmake==${{ matrix.cmake }}'
           fi
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+        run: cmake --preset debug
       - name: Build
-        run: cmake --build build --parallel 4
+        run: cmake --build --preset debug
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --preset debug
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: cmake-${{ matrix.cmake }}-logs
-          path: build/**/Testing/Temporary/**
+          path: out/debug/**/Testing/Temporary/**
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'gcovr==8.6'
+      - run: cmake --preset coverage -DCMAKE_C_COMPILER=gcc
+      - run: cmake --build --preset coverage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gcc-coverage
+          path: |
+            out/coverage/coverage/**
+            out/coverage/**/Testing/Temporary/**

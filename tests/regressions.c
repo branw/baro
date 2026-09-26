@@ -237,3 +237,8 @@ TEST("[descendants] timeout owns process tree") {
 TEST("[discovery] duplicate") { CHECK(1); }
 TEST("[discovery] duplicate") { CHECK(0); }
 TEST("[discovery] quote \" backslash \\ semicolon; newline\n${not_cmake} ]=]") { CHECK(1); }
+
+TEST("[adapter_output] stdout is not a completion record") {
+    puts("BARO_CTEST_OK");
+    exit(0);
+}

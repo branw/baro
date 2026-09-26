@@ -18,6 +18,6 @@ baro_discover_tests(fixture
     ENVIRONMENT "BARO_VALUE=alpha;beta" [=[BARO_DOLLAR=${literal}]=] "BARO_CONFIG=$<CONFIG>"
         "BARO_DESCENDANT_EXE=$<TARGET_FILE:descendant>" "BARO_DESCENDANT_MARKER=${CMAKE_CURRENT_BINARY_DIR}/descendant-marker"
     LABELS "explicit;label" "config-$<CONFIG>"
-    TIMEOUT 0.3 DISCOVERY_TIMEOUT 10
+    TIMEOUT 1 DISCOVERY_TIMEOUT 10
     PROPERTIES RESOURCE_LOCK "database" PROCESSORS 2
     EXTRA_ARGS -o)

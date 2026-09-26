@@ -3,3 +3,6 @@
 
 **/.idea/
 **/.vs/
+
+/CMakeUserPresets.json
+**/__pycache__/
