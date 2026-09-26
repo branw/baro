@@ -11,6 +11,7 @@ int baro_is_child(int argc, char *argv[]);
 #ifdef BARO_ENABLE
 
 #include <setjmp.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -145,20 +146,20 @@ static inline void baro__hash_set_clear(
     memset(set->hashes, 0, set->capacity * sizeof(uint64_t));
 }
 
-static const uint64_t hash_set_prime_1 = 73;
-static const uint64_t hash_set_prime_2 = 5009;
+static const uint64_t baro__hash_set_prime_1 = 73;
+static const uint64_t baro__hash_set_prime_2 = 5009;
 
 static inline void baro__hash_set_add_only(
         struct baro__hash_set * const set,
         uint64_t const hash) {
-    uint64_t index = set->mask & (hash_set_prime_1 * hash);
+    uint64_t index = set->mask & (baro__hash_set_prime_1 * hash);
 
     while (set->hashes[index]) {
         if (set->hashes[index] == hash) {
             return;
         }
 
-        index = set->mask & (index + hash_set_prime_2);
+        index = set->mask & (index + baro__hash_set_prime_2);
     }
 
     set->size++;
@@ -198,20 +199,21 @@ static inline void baro__hash_set_add(
 static inline int baro__hash_set_contains(
         struct baro__hash_set * const set,
         uint64_t const hash) {
-    uint64_t index = set->mask & (hash_set_prime_1 * hash);
+    uint64_t index = set->mask & (baro__hash_set_prime_1 * hash);
 
     while (set->hashes[index]) {
         if (set->hashes[index] == hash) {
             return 1;
         }
 
-        index = set->mask & (index + hash_set_prime_2);
+        index = set->mask & (index + baro__hash_set_prime_2);
     }
 
     return 0;
 }
 
 struct baro__test {
+    int expect_abort;
     const struct baro__tag *tag;
 
     void (*func)(void);
@@ -250,7 +252,7 @@ static inline void baro__test_list_add(
     list->tests[list->size++] = *test;
 }
 
-static int baro__test_list_sort_cmp(
+static inline int baro__test_list_sort_cmp(
         void const *lhs,
         void const *rhs) {
     struct baro__test const * const lhs_test = lhs;
@@ -275,7 +277,7 @@ static inline void baro__test_list_sort(
 struct baro__cleanup {
     struct baro__cleanup *next;
     void (*callback)(void *);
-    unsigned char data[];
+    void *data;
 };
 
 struct baro__context {
@@ -315,6 +317,7 @@ struct baro__context {
 };
 
 extern struct baro__context baro__c;
+extern volatile sig_atomic_t baro__failure_pending;
 
 static inline void baro__context_create(
         struct baro__context * const context) {
@@ -363,11 +366,13 @@ static inline void baro__context_create(
 // The payload is copied, so it survives REQUIRE unwinding the test's stack.
 // Payloads containing pointers must refer to heap or static storage.
 static inline void baro_defer(void (*callback)(void *), const void *data, size_t size) {
-    struct baro__cleanup *entry = malloc(sizeof(*entry) + size);
+    struct baro__cleanup *entry = malloc(sizeof(*entry));
     if (!entry || !callback || (size && !data)) {
         fprintf(stderr, "Invalid cleanup registration or out of memory\n");
         exit(EXIT_FAILURE);
     }
+    entry->data = malloc(size ? size : 1);
+    if (!entry->data) { free(entry); fprintf(stderr, "Out of memory\n"); exit(EXIT_FAILURE); }
     entry->callback = callback;
     if (size) memcpy(entry->data, data, size);
     entry->next = baro__c.cleanups;
@@ -376,6 +381,7 @@ static inline void baro_defer(void (*callback)(void *), const void *data, size_t
 
 static inline void baro__run_cleanups(void) {
     // An assertion in a callback may jump back to the runner. Retire it first.
+    if (baro__c.active_cleanup) free(baro__c.active_cleanup->data);
     free(baro__c.active_cleanup);
     baro__c.active_cleanup = NULL;
     while (baro__c.cleanups) {
@@ -383,6 +389,7 @@ static inline void baro__run_cleanups(void) {
         baro__c.cleanups = entry->next;
         baro__c.active_cleanup = entry;
         entry->callback(entry->data);
+        free(entry->data);
         free(entry);
         baro__c.active_cleanup = NULL;
     }
@@ -391,6 +398,7 @@ static inline void baro__run_cleanups(void) {
 static inline void baro__disable_output(
         struct baro__context * const context,
         FILE *file) {
+    (void)context;
 #ifdef _WIN32
     FILE *dummy;
         if (freopen_s(&dummy, "NUL", "a", file) != 0) {
@@ -453,15 +461,19 @@ static inline void baro__redirect_output(
     }
 }
 
-static inline void baro__register_test(
+static inline void baro__register_test_kind(
         void (* const test_func)(void),
-        struct baro__tag const * const tag) {
+        struct baro__tag const * const tag, int expect_abort) {
     if (baro__c.tests.size == 0) {
         baro__context_create(&baro__c);
     }
 
-    struct baro__test const test = {.func = test_func, .tag = tag};
+    struct baro__test const test = {.expect_abort = expect_abort, .func = test_func, .tag = tag};
     baro__test_list_add(&baro__c.tests, &test);
+}
+
+static inline void baro__register_test(void (*func)(void), const struct baro__tag *tag) {
+    baro__register_test_kind(func, tag, 0);
 }
 
 static inline int baro__check_subtest(
@@ -524,7 +536,7 @@ enum baro__jmp_val {
     BARO__JMP_SIGABRT,
 };
 
-static char const *extract_file_name(
+static inline char const *baro__file_name(
         char const *path) {
     char const *last = path;
     for (char const *p = path; *p; p++) {
@@ -539,12 +551,12 @@ static inline void baro__assert_failed(
         enum baro__assert_type const type, int const jump) {
     struct baro__test const * const test = baro__c.current_test;
     printf("  In: %s (%s:%d)\n",
-           test->tag->desc, extract_file_name(test->tag->file_path), test->tag->line_num);
+           test->tag->desc, baro__file_name(test->tag->file_path), test->tag->line_num);
 
     for (size_t i = 0; i < baro__c.subtest_stack.size; i++) {
         struct baro__tag const * const subtest_tag = baro__c.subtest_stack.tags[i];
         printf("%*cUnder: %s (%s:%d)\n", (int) (i + 2) * 2, ' ',
-               subtest_tag->desc, extract_file_name(subtest_tag->file_path), subtest_tag->line_num);
+               subtest_tag->desc, baro__file_name(subtest_tag->file_path), subtest_tag->line_num);
     }
 
     if (baro__c.stdout_size) {
@@ -577,6 +589,7 @@ static inline void baro__assert1(
         return;
     }
 
+    baro__failure_pending = 1;
     baro__c.current_test_failed = 1;
     baro__c.num_asserts_failed++;
 
@@ -587,7 +600,7 @@ static inline void baro__assert1(
     printf(BARO__RED "%s failed:%s\n" BARO__UNSET_COLOR, assert_type, desc);
     printf("    %s%s\n", value_str, op);
     printf("==> %zu%s\n", value, op);
-    printf("At %s:%d\n", extract_file_name(file_path), line_num);
+    printf("At %s:%d\n", baro__file_name(file_path), line_num);
 
     baro__assert_failed(type, 1);
 }
@@ -609,6 +622,7 @@ static inline void baro__assert2(
         return;
     }
 
+    baro__failure_pending = 1;
     baro__c.current_test_failed = 1;
     baro__c.num_asserts_failed++;
 
@@ -625,7 +639,7 @@ static inline void baro__assert2(
     char const * const assert_type = (type == BARO__ASSERT_REQUIRE ? "Require" : "Check");
     printf(BARO__RED "%s failed:%s\n" BARO__UNSET_COLOR, assert_type, desc);
     printf("    %s %s %s\n", lhs_str, op, rhs_str);
-    printf("At %s:%d\n", extract_file_name(file_path), line_num);
+    printf("At %s:%d\n", baro__file_name(file_path), line_num);
 
     baro__assert_failed(type, 1);
 }
@@ -651,6 +665,7 @@ static inline void baro__assert_str(
         return;
     }
 
+    baro__failure_pending = 1;
     baro__c.current_test_failed = 1;
     baro__c.num_asserts_failed++;
 
@@ -683,7 +698,7 @@ static inline void baro__assert_str(
     printf(BARO__RED "%s%s failed:%s\n" BARO__UNSET_COLOR, assert_type, sensitivity, desc);
     printf("    %s %*s%s %s\n", lhs_str, (int)str_padding, "", op, rhs_str);
     printf("==> %s%s%s %*s%s %s%s%s\n", lhs_wrap, lhs, lhs_wrap, (int)expanded_padding, "", op, rhs_wrap, rhs, rhs_wrap);
-    printf("At %s:%d\n", extract_file_name(file_path), line_num);
+    printf("At %s:%d\n", baro__file_name(file_path), line_num);
 
     baro__assert_failed(type, 1);
 }
@@ -717,6 +732,7 @@ static inline void baro__assert_arr(
     }
     size_t const element_index = index / element_size;
 
+    baro__failure_pending = 1;
     baro__c.current_test_failed = 1;
     baro__c.num_asserts_failed++;
 
@@ -733,7 +749,7 @@ static inline void baro__assert_arr(
     char *q = rhs_val_str;
     uint8_t const *r = &lhs[(element_index + 1) * element_size - 1];
     uint8_t const *s = &rhs[(element_index + 1) * element_size - 1];
-    for (int i = 0; i < element_size; i++) {
+    for (size_t i = 0; i < element_size; i++) {
         size_t const remaining = val_str_size - (p - lhs_val_str);
 
         p += snprintf(p, remaining, "%02x", *r--);
@@ -751,7 +767,7 @@ static inline void baro__assert_arr(
     printf(BARO__RED "%s array failed:%s\n" BARO__UNSET_COLOR, assert_type, desc);
     printf("    %s[%zu] %s %s[%zu]\n", lhs_str, element_index, op, rhs_str, element_index);
     printf("==> 0x%s %s 0x%s\n", lhs_val_str, op, rhs_val_str);
-    printf("At %s:%d\n", extract_file_name(file_path), line_num);
+    printf("At %s:%d\n", baro__file_name(file_path), line_num);
 
     free(lhs_val_str);
     free(rhs_val_str);
@@ -774,6 +790,9 @@ void baro__near(double lhs, double rhs, double absolute, double relative,
 #endif
 
 #else
+static inline void baro_defer(void (*callback)(void *), const void *data, size_t size) {
+    (void)callback; (void)data; (void)size;
+}
 #define baro__assert1(value, value_str, expected_value, type, desc, file_path, line_num) \
 do { (void)(value); (void)(desc); } while(0)
 #define baro__assert2(cond, passed, lhs_str, rhs_str, type, desc, file_path, line_num) \
@@ -816,16 +835,16 @@ do { (void)(lhs); (void)(rhs); (void)(element_size); (void)(element_count); (voi
 // All test functions are registered by a "registrar function" sometime during
 // runtime initialization. This is used to automatically build a list of all
 // tests, across compilation units, for the test runner.
-#define BARO__CREATE_TEST_REGISTRAR(func_name, desc)                            \
+#define BARO__CREATE_TEST_REGISTRAR(func_name, desc, expected)                            \
     static struct baro__tag const func_name##_tag = {desc, __FILE__, __LINE__}; \
     BARO__INITIALIZER(func_name##_registrar) {                                  \
-        baro__register_test(func_name, &func_name##_tag);                       \
+        baro__register_test_kind(func_name, &func_name##_tag, expected);                       \
     }
 
 #ifdef BARO_ENABLE
-#define BARO__TEST_FUNC(func_name, desc)         \
+#define BARO__TEST_FUNC(func_name, desc, expected)         \
     static void func_name(void);                 \
-    BARO__CREATE_TEST_REGISTRAR(func_name, desc) \
+    BARO__CREATE_TEST_REGISTRAR(func_name, desc, expected) \
     static void func_name(void)
 #elif defined(_MSC_VER)
 #define BARO__TEST_FUNC(func_name, ...) static void func_name(void)
@@ -834,7 +853,8 @@ do { (void)(lhs); (void)(rhs); (void)(element_size); (void)(element_count); (voi
     static void __attribute__((unused)) func_name(void)
 #endif//BARO_ENABLE
 
-#define BARO_TEST(desc) BARO__TEST_FUNC(BARO__WITH_COUNTER(BARO_TEST_), desc)
+#define BARO_TEST_ABORT(desc) BARO__TEST_FUNC(BARO__WITH_COUNTER(BARO_TEST_), desc, 1)
+#define BARO_TEST(desc) BARO__TEST_FUNC(BARO__WITH_COUNTER(BARO_TEST_), desc, 0)
 
 #ifdef BARO_ENABLE
 // Here we abuse a while loop so that our macro can call functions before and
@@ -935,25 +955,25 @@ do { (void)(lhs); (void)(rhs); (void)(element_size); (void)(element_count); (voi
 #define BARO__REQUIRE_STR_ICASE_NE2(lhs, rhs) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_FALSE, BARO__CASE_INSENSITIVE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
 #define BARO__REQUIRE_STR_ICASE_NE3(lhs, rhs, desc) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_FALSE, BARO__CASE_INSENSITIVE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
 
-#define BARO__CHECK_ARR_EQ3(lhs, rhs, size) BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_TRUE, BARO__ASSERT_CHECK, "", __FILE__, __LINE__)
-#define BARO__CHECK_ARR_EQ4(lhs, rhs, size, desc) BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_TRUE, BARO__ASSERT_CHECK, " " desc, __FILE__, __LINE__)
+#define BARO__CHECK_ARR_EQ3(lhs, rhs, size) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
+baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_TRUE, BARO__ASSERT_CHECK, "", __FILE__, __LINE__); } while (0)
+#define BARO__CHECK_ARR_EQ4(lhs, rhs, size, desc) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
+baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_TRUE, BARO__ASSERT_CHECK, " " desc, __FILE__, __LINE__); } while (0)
 
-#define BARO__REQUIRE_ARR_EQ3(lhs, rhs, size) BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_TRUE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE_ARR_EQ4(lhs, rhs, size, desc) BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_TRUE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
+#define BARO__REQUIRE_ARR_EQ3(lhs, rhs, size) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
+baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_TRUE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__); } while (0)
+#define BARO__REQUIRE_ARR_EQ4(lhs, rhs, size, desc) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
+baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_TRUE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__); } while (0)
 
-#define BARO__CHECK_ARR_NE3(lhs, rhs, size) BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_CHECK, "", __FILE__, __LINE__)
-#define BARO__CHECK_ARR_NE4(lhs, rhs, size, desc) BARO__STATIC_ASSERT(sizeof(lhs[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_CHECK, " " desc, __FILE__, __LINE__)
+#define BARO__CHECK_ARR_NE3(lhs, rhs, size) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
+baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_CHECK, "", __FILE__, __LINE__); } while (0)
+#define BARO__CHECK_ARR_NE4(lhs, rhs, size, desc) do { BARO__STATIC_ASSERT(sizeof(lhs[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
+baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_CHECK, " " desc, __FILE__, __LINE__); } while (0)
 
-#define BARO__REQUIRE_ARR_NE3(lhs, rhs, size) BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE_ARR_NE4(lhs, rhs, size, desc) BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
+#define BARO__REQUIRE_ARR_NE3(lhs, rhs, size) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
+baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__); } while (0)
+#define BARO__REQUIRE_ARR_NE4(lhs, rhs, size, desc) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
+baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__); } while (0)
 
 #define BARO__GET2(_1, _2, NAME, ...) NAME
 #define BARO__GET3(_1, _2, _3, NAME, ...) NAME
@@ -1110,6 +1130,7 @@ BARO__X((__VA_ARGS__))
 #define REQUIRE_NEAR BARO_REQUIRE_NEAR
 #define CHECK_BYTES_EQ BARO_CHECK_BYTES_EQ
 #define REQUIRE_BYTES_EQ BARO_REQUIRE_BYTES_EQ
+#define TEST_ABORT BARO_TEST_ABORT
 #define TEST BARO_TEST
 #define SUBTEST BARO_SUBTEST
 #define CHECK BARO_CHECK

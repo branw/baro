@@ -19,7 +19,7 @@ This exact example is compiled and run by the test suite.
 
 ## Integration
 
-Vendor `baro.h`, `baro.c`, and `baro_main.c`, then compile your test sources:
+Vendor `baro.h`, `baro.c`, `baro_process.h`, and `baro_main.c`, then compile your test sources:
 
 ```sh
 cc -std=gnu99 -DBARO_ENABLE -Iext/baro app.c ext/baro/baro.c ext/baro/baro_main.c -lm -o tests
@@ -31,7 +31,7 @@ mode on Windows. Registration uses compiler constructor support: GCC, Clang,
 AppleClang, and MSVC are the supported compiler families. Freestanding targets
 are outside the current scope.
 
-With CMake:
+With CMake 3.20 or newer:
 
 ```cmake
 add_subdirectory(ext/baro)
@@ -124,7 +124,7 @@ unique for unambiguous exact selection; duplicates select every matching test.
 By default stdout is captured in a temporary file. Each failure shows the final
 4096 bytes since the preceding failure in that test, including explicit flushes.
 Passing output is discarded. Disk usage grows until capture is reset at a
-failure or traversal/test boundary; `-o` disables in-process capture.
+failure or test boundary; `-o` disables in-process capture.
 
 `-n index -p count` selects one contiguous partition (both values are 1-based).
 Partitions differ by at most one test; earlier partitions get any extra tests.
@@ -145,3 +145,41 @@ in this development session has only run on macOS; CI results determine support
 on other platforms.
 
 MIT license; see [LICENSE](LICENSE).
+
+## Isolated execution
+
+```sh
+./tests --isolate
+./tests --isolate --jobs 4 --timeout 10s
+./tests --isolate -n 2 -p 5 --junit shard2.xml
+```
+
+Baro launches a fresh instance of the same executable for each top-level test.
+Its subtest traversals run together in that child. The parent owns scheduling,
+results, stdout/stderr capture, and reports; no external supervisor is required.
+Static/global memory is fresh for every test. Files, network ports, and other
+external resources remain shared, so parallelism is opt-in.
+
+`--jobs` defaults to one. `--timeout` accepts positive seconds, or an `s`/`ms`
+suffix, and includes child startup. Both require `--isolate`. There is no timeout
+by default. A timeout terminates the test's process group on POSIX or job on
+Windows, including descendants. Completed test children also have their remaining
+descendants terminated. Escaping those process groups/jobs is unsupported.
+
+With `-s`, no new tests launch after the parent observes a failure. Already
+running tests finish or reach their deadlines. Console output is grouped by
+completed child; JUnit entries remain in selection order. Aborted/crashed tests
+have no completed assertion totals; they still count as failed tests.
+
+`TEST_ABORT("description") { ... }` (or `BARO_TEST_ABORT`) expects SIGABRT and
+requires isolation. Normal return, premature exit, and timeout are failures.
+A preceding failed Baro assertion also fails an expected-abort test.
+Ordinary `TEST` treats every abort as failure. Isolation observes an abort via a
+small child signal handler that reports it and exits, without attempting to
+resume damaged code. If code under test replaces that handler, an unexpected
+termination is still a failure but expected-abort recognition may be unavailable.
+
+Isolation uses private temporary result files and captured output files. `-o`
+shows all captured stdout; otherwise failed children show a final 4096-byte tail.
+Stderr is shown unless `-e` is set. Output is presented after child completion,
+not streamed live. Temporary disk space must accommodate output until completion.

@@ -34,3 +34,11 @@ check(1 --test)
 check(1 --junit)
 check(1 --unknown)
 check(1 unexpected)
+
+execute_process(COMMAND "${EMPTY_PROGRAM}" --allow-empty --junit "${WORK}/empty-suite.xml"
+    RESULT_VARIABLE status OUTPUT_VARIABLE out ERROR_VARIABLE err)
+if(NOT "${status}" STREQUAL "0" OR NOT out MATCHES "0 total.*0 passed.*0 failed")
+    message(FATAL_ERROR "Empty suite failed: ${out}${err}")
+endif()
+check(1 -t "")
+check(1 --baro-child 1 --baro-result "${WORK}/invalid-child" --test missing)

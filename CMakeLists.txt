@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.20)
 project(baro VERSION 0.1.0 LANGUAGES C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -23,9 +23,16 @@ add_library(baro_main STATIC baro_main.c)
 set_target_properties(baro_main PROPERTIES EXPORT_NAME main)
 add_library(baro::main ALIAS baro_main)
 target_link_libraries(baro_main PUBLIC baro)
+if(MSVC)
+    target_compile_options(baro PRIVATE /W4)
+else()
+    target_compile_options(baro PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
 if(BARO_SANITIZERS)
     if(MSVC)
+        string(REPLACE "/RTC1" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
         target_compile_options(baro PUBLIC /fsanitize=address)
+        target_link_options(baro PUBLIC /INCREMENTAL:NO)
     else()
         target_compile_options(baro PUBLIC -fsanitize=address,undefined)
         target_link_options(baro PUBLIC -fsanitize=address,undefined)
@@ -84,7 +91,7 @@ target_link_libraries(baro_regressions PRIVATE baro::main)
 target_include_directories(baro_regressions PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(baro_regressions PRIVATE BARO_ENABLE)
 foreach(case numeric float_failure require output suppression descriptors many
-             abort cleanup null_strings null_failures capture4095 capture4096 capture4097
+             abort cleanup cleanup_failure null_strings null_failures capture4095 capture4096 capture4097
              capture9000 capture_isolation)
     add_test(NAME regression_${case}
         COMMAND ${CMAKE_COMMAND}
@@ -117,9 +124,16 @@ add_executable(example_readme examples/readme.c)
 target_link_libraries(example_readme PRIVATE baro::main)
 add_test(NAME readme_example COMMAND example_readme)
 add_test(NAME automation COMMAND ${CMAKE_COMMAND}
+    "-DEMPTY_PROGRAM=$<TARGET_FILE:example_empty>"
     "-DPROGRAM=$<TARGET_FILE:baro_regressions>"
     "-DWORK=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/automation.cmake")
 add_test(NAME documentation COMMAND ${CMAKE_COMMAND}
     "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/documentation.cmake")
+add_executable(baro_descendant tests/descendant.c)
+add_test(NAME isolation COMMAND ${CMAKE_COMMAND}
+    "-DDESCENDANT=$<TARGET_FILE:baro_descendant>"
+    "-DPROGRAM=$<TARGET_FILE:baro_regressions>"
+    "-DWORK=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolation.cmake")

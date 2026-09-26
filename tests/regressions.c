@@ -154,3 +154,82 @@ TEST("[typed_fail] <diagnostics> & \"escaping\"") {
     REQUIRE_NEAR(1, 2, 0, 0);
     fprintf(stderr, "UNREACHABLE\n");
 }
+
+static int isolated_state;
+TEST("[isolated_state] first") { CHECK_EQ(++isolated_state, 1); }
+TEST("[isolated_state] second") { CHECK_EQ(++isolated_state, 1); }
+TEST("[isolated_exit] premature success") { exit(0); }
+TEST("[isolated_crash] signal") { raise(SIGSEGV); }
+
+#ifdef _WIN32
+#include <windows.h>
+static void sleep_ms(unsigned ms) { Sleep(ms); }
+#else
+#include <time.h>
+static void sleep_ms(unsigned ms) {
+    struct timespec delay = {ms / 1000, (long)(ms % 1000) * 1000000};
+    nanosleep(&delay, NULL);
+}
+#endif
+TEST("[deadline] hangs") { for (;;) sleep_ms(100); }
+TEST("[deadline] following test") { CHECK(1); }
+TEST("[stop] fails") { CHECK(0); }
+TEST("[stop] must not start") { fprintf(stderr, "UNREACHABLE\n"); }
+TEST_ABORT("[expected_abort] library assertion") { raise(SIGABRT); }
+TEST_ABORT("[missing_abort] returned normally") { CHECK(1); }
+TEST_ABORT("[wrong_abort] exited normally") { exit(0); }
+
+static void meet_workers(int index) {
+    const char *directory = getenv("BARO_BARRIER_DIR");
+    REQUIRE(directory != NULL);
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/worker%d", directory, index);
+    FILE *file = fopen(path, "wb");
+    REQUIRE(file != NULL);
+    fclose(file);
+    int count = 0;
+    for (int attempt = 0; attempt < 400; attempt++) {
+        count = 0;
+        for (int i = 0; i < 4; i++) {
+            snprintf(path, sizeof(path), "%s/worker%d", directory, i);
+            file = fopen(path, "rb");
+            if (file) { count++; fclose(file); }
+        }
+        if (count == 4) break;
+        sleep_ms(5);
+    }
+    CHECK_EQ(count, 4);
+}
+TEST("[workers] zero") { meet_workers(0); }
+TEST("[workers] one") { meet_workers(1); }
+TEST("[workers] two") { meet_workers(2); }
+TEST("[workers] three") { meet_workers(3); }
+
+static int cleanup_completed;
+static void cleanup_finish(void *payload) { (void)payload; cleanup_completed = 1; }
+static void cleanup_fail(void *payload) { (void)payload; REQUIRE(0); }
+TEST("[cleanup_failure] cleanup assertion") {
+    baro_defer(cleanup_finish, NULL, 0);
+    baro_defer(cleanup_fail, NULL, 0);
+}
+TEST("[cleanup_failure] remaining cleanup completed") { CHECK_EQ(cleanup_completed, 1); }
+TEST_ABORT("[abort_with_failure] must remain failed") { CHECK(0); raise(SIGABRT); }
+
+TEST("[descendants] timeout owns process tree") {
+    const char *exe = getenv("BARO_DESCENDANT_EXE");
+    REQUIRE(exe != NULL);
+#ifdef _WIN32
+    char command[4096];
+    snprintf(command, sizeof(command), "\"%s\"", exe);
+    STARTUPINFOA startup = {0};
+    PROCESS_INFORMATION info;
+    startup.cb = sizeof(startup);
+    REQUIRE(CreateProcessA(NULL, command, NULL, NULL, FALSE, 0, NULL, NULL, &startup, &info));
+    CloseHandle(info.hThread); CloseHandle(info.hProcess);
+#else
+    pid_t pid = fork();
+    REQUIRE_GE(pid, 0);
+    if (!pid) { execl(exe, exe, (char *)NULL); _exit(127); }
+#endif
+    for (;;) sleep_ms(100);
+}

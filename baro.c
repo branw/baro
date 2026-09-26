@@ -2,6 +2,7 @@
 #include "baro.h"
 
 struct baro__context baro__c = {0};
+volatile sig_atomic_t baro__failure_pending = 0;
 
 #include <errno.h>
 #include <inttypes.h>
@@ -23,6 +24,24 @@ struct baro__result {
     size_t asserts, asserts_failed;
     const char *reason;
 };
+
+#include "baro_process.h"
+
+static volatile sig_atomic_t baro__child_result_fd = -1;
+static void baro__child_abort(int signum) {
+    (void)signum;
+#ifdef _WIN32
+    if (baro__failure_pending) _write(baro__child_result_fd, "BARO_ABORT_FAILED\n", 18);
+    else _write(baro__child_result_fd, "BARO_ABORT\n", 11);
+    _exit(128 + SIGABRT);
+#else
+    ssize_t ignored = baro__failure_pending ?
+        write(baro__child_result_fd, "BARO_ABORT_FAILED\n", 18) :
+        write(baro__child_result_fd, "BARO_ABORT\n", 11);
+    (void)ignored;
+    _exit(128 + SIGABRT);
+#endif
+}
 
 static void baro__xml(FILE *out, const char *text) {
     for (const unsigned char *p = (const unsigned char *)text; *p; ++p) {
@@ -85,6 +104,56 @@ static void handle_signal(int signum) {
     }
 }
 
+static void baro__run_one(const struct baro__test *test, int recover_abort) {
+    baro__c.current_test = test;
+    baro__c.current_test_failed = 0;
+    baro__failure_pending = 0;
+    baro__hash_set_clear(&baro__c.passed_subtests);
+
+    int run_test = 1;
+
+    switch (BARO__SETJMP(baro__c.env)) {
+    case BARO__JMP_REQUIRE:
+        run_test = 0;
+        break;
+    case BARO__JMP_SIGABRT: {
+        baro__failure_pending = 1;
+        baro__c.current_test_failed = 1;
+        baro__c.num_asserts++;
+        baro__c.num_asserts_failed++;
+
+        baro__redirect_output(&baro__c, 0);
+
+        printf(BARO__RED "Assertion failed! Caught SIGABRT\n" BARO__UNSET_COLOR);
+        baro__assert_failed(BARO__ASSERT_REQUIRE, 0);
+
+        run_test = 0;
+        break;
+    }
+    default:
+        if (recover_abort) set_sigabrt_handler(handle_signal);
+        break;
+    }
+
+    while (run_test) {
+        // Reset the current subtest stack
+        baro__c.should_reenter_subtest = 0;
+        baro__c.subtest_max_size = 0;
+        baro__tag_list_clear(&baro__c.subtest_stack);
+
+        test->func();
+        baro__run_cleanups();
+
+        // Keep looping until all subtest permutations have been visited
+        if (!baro__c.should_reenter_subtest) {
+            run_test = 0;
+        }
+    }
+
+    baro__run_cleanups();
+    if (recover_abort) set_sigabrt_handler(NULL);
+}
+
 int baro_run(
         int argc,
         char *argv[]) {
@@ -97,15 +166,37 @@ int baro_run(
     size_t cur_partition = 1;
     char *raw_tag_filters = NULL;
     const char *exact_name = NULL, *junit_path = NULL;
-    int list_tests = 0, allow_empty = 0;
+    int list_tests = 0, allow_empty = 0, isolate = 0;
+    size_t child_id = 0, jobs = 1;
+    double timeout = 0;
+    const char *child_result = NULL;
     char *baro__optarg = NULL;
 
+    if (!baro__c.tests.tests) baro__context_create(&baro__c);
     size_t const total_num_tests = baro__c.tests.size;
 
     // Parse short clusters and long options without exporting getopt symbols.
     for (int arg = 1; arg < argc; arg++) {
         const char *option = argv[arg];
         if (strncmp(option, "--", 2) == 0) {
+            if (!strcmp(option, "--jobs") || !strcmp(option, "--timeout")) {
+                if (++arg == argc) return EXIT_FAILURE;
+                if (!strcmp(option, "--jobs")) { jobs = baro__positive(argv[arg]); if (!jobs) return EXIT_FAILURE; }
+                else {
+                    char *end; errno = 0; timeout = strtod(argv[arg], &end);
+                    if (!strcmp(end, "ms")) timeout /= 1000;
+                    else if (*end && strcmp(end, "s")) return EXIT_FAILURE;
+                    if (errno || !isfinite(timeout) || timeout <= 0) return EXIT_FAILURE;
+                }
+                continue;
+            }
+            if (!strcmp(option, "--isolate")) { isolate = 1; continue; }
+            if (!strcmp(option, "--baro-child") || !strcmp(option, "--baro-result")) {
+                if (++arg == argc) return EXIT_FAILURE;
+                if (!strcmp(option, "--baro-child")) { child_id = baro__positive(argv[arg]); if (!child_id) return EXIT_FAILURE; }
+                else child_result = argv[arg];
+                continue;
+            }
             if (!strcmp(option, "--list-tests")) { list_tests = 1; continue; }
             if (!strcmp(option, "--allow-empty")) { allow_empty = 1; continue; }
             if (!strcmp(option, "--recover-abort")) { recover_abort = 1; continue; }
@@ -155,6 +246,7 @@ int baro_run(
             break;
 
         case 't':
+            if (!*baro__optarg) { fprintf(stderr, "Empty tag filter\n"); return EXIT_FAILURE; }
             free(raw_tag_filters);
 #ifdef _WIN32
             raw_tag_filters = _strdup(baro__optarg);
@@ -174,6 +266,9 @@ int baro_run(
                    "  -t <tag1,tag2,...>   Only run tests with one of these [tags]\n"
                    "  -p <num_partitions>  Total number of partitions, 1-based\n"
                    "  -n <cur_partition>   Current partition index, 1-based\n"
+                   "  --jobs <count>       Concurrent isolated tests (default 1)\n"
+                   "  --timeout <seconds>  Isolated test deadline (s or ms suffix)\n"
+                   "  --isolate            Run each test in a fresh child process\n"
                    "  --list-tests         List selected tests without executing\n"
                    "  --test <name>        Select an exact test description\n"
                    "  --allow-empty        Permit zero selected tests\n"
@@ -189,6 +284,24 @@ int baro_run(
         }
     }
 
+    }
+
+    if (!isolate && (jobs != 1 || timeout > 0)) {
+        fprintf(stderr, "--jobs and --timeout require --isolate\n"); return EXIT_FAILURE;
+    }
+    if (isolate && recover_abort) {
+        fprintf(stderr, "--recover-abort is only for in-process tests\n"); return EXIT_FAILURE;
+    }
+    if (child_id || child_result) {
+        if (!child_id || !child_result || child_id > total_num_tests || isolate || recover_abort ||
+            raw_tag_filters || exact_name || list_tests || junit_path || num_partitions != 1 || cur_partition != 1) return EXIT_FAILURE;
+        FILE *channel = fopen(child_result, "wb");
+        if (!channel) return EXIT_FAILURE;
+        baro__child_result_fd = BARO__DUP(BARO__FILENO(channel));
+        fclose(channel);
+        if (baro__child_result_fd < 0) return EXIT_FAILURE;
+        signal(SIGABRT, baro__child_abort);
+        setvbuf(stdout, NULL, _IONBF, 0);
     }
 
     if (total_num_tests == 0 && !allow_empty) {
@@ -302,6 +415,7 @@ int baro_run(
         return EXIT_FAILURE;
     }
 
+    baro__test_list_sort(&baro__c.tests);
     // Sort the list of tests so that we get a deterministic order of execution
     // across different compilers and runtimes
     baro__test_list_sort(&tests);
@@ -310,19 +424,28 @@ int baro_run(
     size_t const partition_size = num_tests / num_partitions;
     size_t const remainder = num_tests % num_partitions;
     size_t const partition_index = cur_partition - 1;
-    size_t const first_test = partition_size * partition_index +
+    size_t const first_test = child_id ? child_id - 1 : partition_size * partition_index +
             (partition_index < remainder ? partition_index : remainder);
-    size_t const last_test = first_test + partition_size + (partition_index < remainder);
+    size_t const last_test = child_id ? child_id : first_test + partition_size + (partition_index < remainder);
 
     if (list_tests) {
         for (size_t i = first_test; i < last_test; i++) puts(tests.tests[i].tag->desc);
         if (tests.tests != baro__c.tests.tests) free(tests.tests);
         return EXIT_SUCCESS;
     }
+    if (!isolate && !child_id) {
+        for (size_t i = first_test; i < last_test; i++) {
+            if (tests.tests[i].expect_abort) {
+                fprintf(stderr, "Expected-abort tests require --isolate\n");
+                return EXIT_FAILURE;
+            }
+        }
+    }
     struct baro__result *results = calloc(num_tests ? num_tests : 1, sizeof(*results));
     if (!results) return EXIT_FAILURE;
 
     size_t const num_tests_to_run = last_test - first_test;
+    if (!child_id) {
     printf("Running %zu out of %zu test%s (of %zu total)\n", num_tests_to_run, num_tests,
            num_tests > 1 ? "s" : "", total_num_tests);
     if (num_partitions > 1) {
@@ -330,89 +453,116 @@ int baro_run(
     }
 
     printf(BARO__SEPARATOR);
+    }
 
     baro__c.suppress_stdout = suppress_stdout;
-    baro__redirect_output(&baro__c, suppress_stdout);
-    if (suppress_stderr) {
+    if (!isolate) baro__redirect_output(&baro__c, suppress_stdout);
+    if (suppress_stderr && !isolate) {
         baro__disable_output(&baro__c, stderr);
     }
 
-    // Begin running tests serially
-    for (size_t i = first_test; i < last_test; i++) {
-        struct baro__test const * const test = &tests.tests[i];
-        size_t const before_asserts = baro__c.num_asserts;
-        size_t const before_failed = baro__c.num_asserts_failed;
-        baro__c.current_test = test;
-        baro__c.current_test_failed = 0;
-        baro__hash_set_clear(&baro__c.passed_subtests);
-
-        int run_test = 1;
-
-        int const jmp_val = BARO__SETJMP(baro__c.env);
-        // Recover from REQUIRE assertion failures
-        if (jmp_val == BARO__JMP_REQUIRE) {
-            run_test = 0;
-        }
-        // Recover from SIGABRT failures
-        else if (jmp_val == BARO__JMP_SIGABRT) {
-            baro__c.current_test_failed = 1;
-            baro__c.num_asserts++;
-            baro__c.num_asserts_failed++;
-
-            baro__redirect_output(&baro__c, 0);
-
-            printf(BARO__RED "Assertion failed! Caught SIGABRT\n" BARO__UNSET_COLOR);
-            baro__assert_failed(BARO__ASSERT_REQUIRE, 0);
-
-            run_test = 0;
-        }
-        // Otherwise, install a SIGABRT handler
-        else {
-            if (recover_abort) set_sigabrt_handler(handle_signal);
-        }
-
-        while (run_test) {
-            // Reset the current subtest stack
-            baro__c.should_reenter_subtest = 0;
-            baro__c.subtest_max_size = 0;
-            baro__tag_list_clear(&baro__c.subtest_stack);
-
-            test->func();
-            baro__run_cleanups();
-
-            // Keep looping until all subtest permutations have been visited
-            if (!baro__c.should_reenter_subtest) {
-                run_test = 0;
+    if (isolate) {
+        char executable[4096];
+        const char *exe = baro__executable(executable, sizeof(executable), argv[0]);
+        struct baro__slot { struct baro__process process; size_t index, id; int active; };
+        size_t workers = jobs < num_tests_to_run ? jobs : num_tests_to_run;
+        struct baro__slot *slots = calloc(workers ? workers : 1, sizeof(*slots));
+        if (!slots) return EXIT_FAILURE;
+        size_t next = first_test, active = 0;
+        int stopped = 0;
+        while (active || (!stopped && next < last_test)) {
+            for (size_t worker = 0; worker < workers; worker++) {
+                struct baro__slot *slot = &slots[worker];
+                if (!slot->active && !stopped && next < last_test) {
+                    slot->index = next++;
+                    slot->id = 0;
+                    for (size_t j = 0; j < total_num_tests; j++)
+                        if (baro__c.tests.tests[j].tag == tests.tests[slot->index].tag &&
+                            baro__c.tests.tests[j].func == tests.tests[slot->index].func) { slot->id = j + 1; break; }
+                    if (baro__process_start(&slot->process, exe, slot->id)) {
+                        slot->active = 1; active++;
+                    } else {
+                        results[slot->index] = (struct baro__result){1, 1, 0, 0, "Could not launch test"};
+                        baro__c.num_tests_ran++; baro__c.num_tests_failed++;
+                        fprintf(stderr, "Failed to launch: %s\n", tests.tests[slot->index].tag->desc);
+                        if (stop_after_failure) stopped = 1;
+                    }
+                }
+                if (!slot->active || !baro__process_poll(&slot->process, timeout)) continue;
+                size_t i = slot->index;
+                results[i] = baro__process_result(&slot->process, slot->id);
+                if (tests.tests[i].expect_abort) {
+                    if (results[i].reason && !strcmp(results[i].reason, "SIGABRT")) {
+                        results[i].failed = 0; results[i].reason = NULL;
+                    } else {
+                        results[i].failed = 1;
+                        if (!results[i].reason) results[i].reason = "Expected SIGABRT was not raised";
+                    }
+                }
+                if (!suppress_stdout || results[i].failed) baro__process_output(slot->process.out, stdout, suppress_stdout);
+                if (!suppress_stderr) baro__process_output(slot->process.err, stderr, 0);
+                baro__process_dispose(&slot->process);
+                slot->active = 0; active--;
+                baro__c.num_tests_ran++;
+                baro__c.num_tests_failed += results[i].failed;
+                baro__c.num_asserts += results[i].asserts;
+                baro__c.num_asserts_failed += results[i].asserts_failed;
+                if (results[i].failed || show_passed_tests)
+                    printf("%s: %s%s%s\n", results[i].failed ? "Failed" : "Passed",
+                           tests.tests[i].tag->desc, results[i].reason ? " - " : "",
+                           results[i].reason ? results[i].reason : "");
+                if (results[i].failed && stop_after_failure) stopped = 1;
             }
+            if (active) baro__process_pause();
         }
+        free(slots);
+    } else {
+        // Begin running tests serially
+        for (size_t i = first_test; i < last_test; i++) {
+            struct baro__test const * const test = &tests.tests[i];
+            size_t const before_asserts = baro__c.num_asserts;
+            size_t const before_failed = baro__c.num_asserts_failed;
+            baro__run_one(test, recover_abort);
+            results[i].ran = 1;
+            results[i].failed = baro__c.current_test_failed;
+            results[i].asserts = baro__c.num_asserts - before_asserts;
+            results[i].asserts_failed = baro__c.num_asserts_failed - before_failed;
+            baro__c.num_tests_ran++;
+            if (baro__c.current_test_failed) {
+                baro__c.num_tests_failed++;
+                if (stop_after_failure) {
+                    break;
+                }
+            } else if (show_passed_tests) {
+                baro__redirect_output(&baro__c, 0);
 
-        baro__run_cleanups();
-        if (recover_abort) set_sigabrt_handler(NULL);
-        results[i].ran = 1;
-        results[i].failed = baro__c.current_test_failed;
-        results[i].asserts = baro__c.num_asserts - before_asserts;
-        results[i].asserts_failed = baro__c.num_asserts_failed - before_failed;
-        baro__c.num_tests_ran++;
-        if (baro__c.current_test_failed) {
-            baro__c.num_tests_failed++;
-            if (stop_after_failure) {
-                break;
+                printf(BARO__GREEN "Passed: %s (%s:%d)\n" BARO__UNSET_COLOR BARO__SEPARATOR,
+                       test->tag->desc, baro__file_name(test->tag->file_path), test->tag->line_num);
+                baro__redirect_output(&baro__c, suppress_stdout);
             }
-        } else if (show_passed_tests) {
-            baro__redirect_output(&baro__c, 0);
 
-            printf(BARO__GREEN "Passed: %s (%s:%d)\n" BARO__UNSET_COLOR BARO__SEPARATOR,
-                   test->tag->desc, extract_file_name(test->tag->file_path), test->tag->line_num);
+            // Discard successful output and start the next test with empty capture.
+            baro__redirect_output(&baro__c, 0);
+            baro__c.stdout_size = 0;
             baro__redirect_output(&baro__c, suppress_stdout);
         }
 
-        // Discard successful output and start the next test with empty capture.
-        baro__redirect_output(&baro__c, 0);
-        baro__c.stdout_size = 0;
-        baro__redirect_output(&baro__c, suppress_stdout);
     }
-
     baro__redirect_output(&baro__c, 0);
+    if (child_id) {
+#ifdef _WIN32
+        FILE *channel = _fdopen(baro__child_result_fd, "wb");
+#else
+        FILE *channel = fdopen(baro__child_result_fd, "wb");
+#endif
+        if (!channel) return EXIT_FAILURE;
+        fprintf(channel, "BARO1 %zu %d %zu %zu\n", child_id, baro__c.num_tests_failed != 0,
+                baro__c.num_asserts, baro__c.num_asserts_failed);
+        int ok = !ferror(channel);
+        if (fclose(channel)) ok = 0;
+        free(results);
+        return !ok || baro__c.num_tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
 
     printf("tests:   %5zu total | " BARO__GREEN "%5zu passed" BARO__UNSET_COLOR
            " | " BARO__RED "%5zu failed" BARO__UNSET_COLOR "\n",
@@ -439,10 +589,11 @@ int baro_is_child(int argc, char *argv[]) {
 }
 
 static void baro__typed_failure(int hard, const char *file, int line, const char *values) {
+    baro__failure_pending = 1;
     baro__c.current_test_failed = 1;
     baro__c.num_asserts_failed++;
     baro__redirect_output(&baro__c, 0);
-    printf("%s failed: %s\nAt %s:%d\n", hard ? "Require" : "Check", values, extract_file_name(file), line);
+    printf("%s failed: %s\nAt %s:%d\n", hard ? "Require" : "Check", values, baro__file_name(file), line);
     baro__assert_failed(hard ? BARO__ASSERT_REQUIRE : BARO__ASSERT_CHECK, 1);
 }
 void baro__typed_int(intmax_t a, intmax_t b, int hard, const char *file, int line) {
