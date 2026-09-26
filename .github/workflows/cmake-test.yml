@@ -1,35 +1,23 @@
 name: CMake
-
-on: [push]
-
-env:
-  BUILD_TYPE: Debug
-
+on: [push, pull_request]
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
-        os: [ ubuntu-latest, windows-latest, macos-latest ]
-
+        build_type: [Debug, Release]
+        platform:
+          - {os: ubuntu-latest, cc: gcc}
+          - {os: ubuntu-latest, cc: clang}
+          - {os: macos-latest, cc: clang}
+          - {os: windows-latest, cc: cl}
+    runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@v2
-
-      - name: Create Build Environment
-        run: cmake -E make_directory ${{runner.workspace}}/build
-
-      - name: Configure CMake
+      - name: Configure
         shell: bash
-        working-directory: ${{runner.workspace}}/build
-        run: cmake $GITHUB_WORKSPACE -DCMAKE_BUILD_TYPE=$BUILD_TYPE
-
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBARO_SANITIZERS=ON -DCMAKE_C_COMPILER=${{ matrix.platform.cc }}
       - name: Build
-        working-directory: ${{runner.workspace}}/build
-        shell: bash
-        run: cmake --build . --config $BUILD_TYPE
-
+        run: cmake --build build --config ${{ matrix.build_type }}
       - name: Test
-        working-directory: ${{runner.workspace}}/build
-        shell: bash
-        run: ctest -C $BUILD_TYPE --output-on-failure
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure

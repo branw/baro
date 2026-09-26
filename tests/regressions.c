@@ -128,3 +128,29 @@ TEST("[cleanup] callbacks completed") {
     baro_defer(cleanup_record, &value, sizeof(value));
     CHECK(1);
 }
+
+#include <math.h>
+TEST("[typed] values & tolerances") {
+    int n = 0;
+    CHECK_INT_EQ(n++, 0);
+    CHECK_EQ(n, 1);
+    REQUIRE_UINT_EQ(UINT64_MAX, UINT64_MAX);
+    CHECK_PTR_EQ(&n, &n);
+    REQUIRE_DOUBLE_EQ(0.5, 0.5);
+    CHECK_NEAR(1.0, 1.001, 0.01, 0);
+    REQUIRE_NEAR(1000.0, 1001.0, 0, 0.01);
+    CHECK_NEAR(INFINITY, INFINITY, 0, 0);
+    CHECK_NEAR(-0.0, 0.0, 0, 0);
+    CHECK_BYTES_EQ("abc", "abc", 3);
+}
+TEST("[typed_fail] <diagnostics> & \"escaping\"") {
+    CHECK_INT_EQ(-1, 2);
+    CHECK_UINT_EQ(UINT64_MAX, 0);
+    CHECK_PTR_EQ(NULL, &baro__c);
+    CHECK_DOUBLE_EQ(1.25, 2.5);
+    CHECK_NEAR(NAN, NAN, 1, 1);
+    CHECK_NEAR(INFINITY, -INFINITY, 1, 1);
+    CHECK_NEAR(1, 1, -1, 0);
+    REQUIRE_NEAR(1, 2, 0, 0);
+    fprintf(stderr, "UNREACHABLE\n");
+}

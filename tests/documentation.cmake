@@ -1,0 +1,6 @@
+file(READ "${SOURCE}/README.md" readme)
+file(READ "${SOURCE}/examples/readme.c" example)
+string(FIND "${readme}" "```c\n${example}```" found)
+if(found EQUAL -1)
+    message(FATAL_ERROR "README C example differs from the compiled example")
+endif()

@@ -112,3 +112,14 @@ add_test(NAME consumer_integration COMMAND ${CMAKE_COMMAND}
     "-DBUILD=${CMAKE_CURRENT_BINARY_DIR}"
     "-DCONFIG=$<CONFIG>"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer.cmake")
+
+add_executable(example_readme examples/readme.c)
+target_link_libraries(example_readme PRIVATE baro::main)
+add_test(NAME readme_example COMMAND example_readme)
+add_test(NAME automation COMMAND ${CMAKE_COMMAND}
+    "-DPROGRAM=$<TARGET_FILE:baro_regressions>"
+    "-DWORK=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/automation.cmake")
+add_test(NAME documentation COMMAND ${CMAKE_COMMAND}
+    "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/documentation.cmake")

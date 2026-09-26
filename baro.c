@@ -3,63 +3,65 @@
 
 struct baro__context baro__c = {0};
 
-static char *baro__optarg;
+#include <errno.h>
+#include <inttypes.h>
+#include <math.h>
 
-// A small getopt-like function for parsing short CLI arguments
-static int baro__getopt(
-        int const num_args,
-        char * const * args,
-        char const * opts) {
-    static char *arg = "";
-    static int cur_arg = 1;
-
-    if (!*arg) {
-        if (cur_arg >= num_args || *(arg = args[cur_arg]) != '-') {
-            arg = "";
-            return -1;
-        }
-        if (arg[1] && *++arg == '-') {
-            ++cur_arg;
-            arg = "";
-            fprintf(stderr, "Long options not supported\n");
-            return 0;
-        }
-    }
-
-    char opt;
-    char const *cur_opt;
-
-    if ((opt = *arg++) == ':' || !(cur_opt = strchr(opts, opt))) {
-        if (opt == '-') {
-            return -1;
-        }
-        if (!*arg) {
-            ++cur_arg;
-        }
-        fprintf(stderr, "Illegal option: %c\n", opt);
+static size_t baro__positive(const char *text) {
+    char *end;
+    errno = 0;
+    unsigned long long value = strtoull(text, &end, 10);
+    if (errno || !*text || *end || text[0] == '-' || !value || value > SIZE_MAX) {
+        fprintf(stderr, "Expected a positive integer: %s\n", text);
         return 0;
     }
+    return (size_t)value;
+}
 
-    if (*++cur_opt != ':') {
-        baro__optarg = NULL;
-        if (!*arg) {
-            ++cur_arg;
+struct baro__result {
+    int ran, failed;
+    size_t asserts, asserts_failed;
+    const char *reason;
+};
+
+static void baro__xml(FILE *out, const char *text) {
+    for (const unsigned char *p = (const unsigned char *)text; *p; ++p) {
+        switch (*p) {
+        case '&': fputs("&amp;", out); break;
+        case '<': fputs("&lt;", out); break;
+        case '>': fputs("&gt;", out); break;
+        case '\"': fputs("&quot;", out); break;
+        case '\'': fputs("&apos;", out); break;
+        default: if (*p >= 32 || *p == '\n' || *p == '\t') fputc(*p, out);
         }
-    } else {
-        if (*arg) {
-            baro__optarg = arg;
-        } else if (num_args <= ++cur_arg) {
-            arg = "";
-            fprintf(stderr, "Option requires an argument: %c\n", opt);
-            return 0;
-        } else {
-            baro__optarg = args[cur_arg];
-        }
-        arg = "";
-        ++cur_arg;
     }
+}
 
-    return opt;
+static int baro__junit(const char *path, struct baro__test_list *tests,
+                       struct baro__result *results) {
+    FILE *out = fopen(path, "wb");
+    if (!out) { perror("Cannot write JUnit report"); return 0; }
+    fprintf(out, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                 "<testsuite name=\"baro\" tests=\"%zu\" failures=\"%zu\">\n",
+                 baro__c.num_tests_ran, baro__c.num_tests_failed);
+    for (size_t i = 0; i < tests->size; i++) {
+        if (!results[i].ran) continue;
+        fputs("  <testcase name=\"", out);
+        baro__xml(out, tests->tests[i].tag->desc);
+        fputs("\" file=\"", out);
+        baro__xml(out, tests->tests[i].tag->file_path);
+        fprintf(out, "\" line=\"%d\" assertions=\"%zu\">", tests->tests[i].tag->line_num, results[i].asserts);
+        if (results[i].failed) {
+            fputs("<failure message=\"", out);
+            baro__xml(out, results[i].reason ? results[i].reason : "Assertion failure");
+            fprintf(out, "\">%zu failed assertions</failure>", results[i].asserts_failed);
+        }
+        fputs("</testcase>\n", out);
+    }
+    fputs("</testsuite>\n", out);
+    int ok = !ferror(out);
+    if (fclose(out)) ok = 0;
+    return ok;
 }
 
 static void set_sigabrt_handler(void (*handler)(int)) {
@@ -94,20 +96,46 @@ int baro_run(
     size_t num_partitions = 1;
     size_t cur_partition = 1;
     char *raw_tag_filters = NULL;
+    const char *exact_name = NULL, *junit_path = NULL;
+    int list_tests = 0, allow_empty = 0;
+    char *baro__optarg = NULL;
 
     size_t const total_num_tests = baro__c.tests.size;
 
-    // Parse command line options
-    int c;
-    while ((c = baro__getopt(argc, argv, "hraoesp:n:t:")) != -1) {
+    // Parse short clusters and long options without exporting getopt symbols.
+    for (int arg = 1; arg < argc; arg++) {
+        const char *option = argv[arg];
+        if (strncmp(option, "--", 2) == 0) {
+            if (!strcmp(option, "--list-tests")) { list_tests = 1; continue; }
+            if (!strcmp(option, "--allow-empty")) { allow_empty = 1; continue; }
+            if (!strcmp(option, "--recover-abort")) { recover_abort = 1; continue; }
+            if (!strcmp(option, "--test") || !strcmp(option, "--junit")) {
+                if (++arg == argc) { fprintf(stderr, "Missing value for %s\n", option); return EXIT_FAILURE; }
+                if (!strcmp(option, "--test")) exact_name = argv[arg];
+                else junit_path = argv[arg];
+                continue;
+            }
+            fprintf(stderr, "Unknown option: %s\n", option);
+            return EXIT_FAILURE;
+        }
+        if (*option++ != '-' || !*option) { fprintf(stderr, "Unexpected argument\n"); return EXIT_FAILURE; }
+        while (*option) {
+            int c = *option++;
+            if (c == 'p' || c == 'n' || c == 't') {
+                if (*option) { baro__optarg = (char *)option; option += strlen(option); }
+                else if (++arg < argc) baro__optarg = argv[arg];
+                else { fprintf(stderr, "Missing option value\n"); return EXIT_FAILURE; }
+            }
         switch (c) {
         case 'r': recover_abort = 1; break;
         case 'p':
-            num_partitions = strtol(baro__optarg, NULL, 10);
+            num_partitions = baro__positive(baro__optarg);
+            if (!num_partitions) return EXIT_FAILURE;
             break;
 
         case 'n':
-            cur_partition = strtol(baro__optarg, NULL, 10);
+            cur_partition = baro__positive(baro__optarg);
+            if (!cur_partition) return EXIT_FAILURE;
             break;
 
         case 'a':
@@ -127,6 +155,7 @@ int baro_run(
             break;
 
         case 't':
+            free(raw_tag_filters);
 #ifdef _WIN32
             raw_tag_filters = _strdup(baro__optarg);
 #else
@@ -145,6 +174,11 @@ int baro_run(
                    "  -t <tag1,tag2,...>   Only run tests with one of these [tags]\n"
                    "  -p <num_partitions>  Total number of partitions, 1-based\n"
                    "  -n <cur_partition>   Current partition index, 1-based\n"
+                   "  --list-tests         List selected tests without executing\n"
+                   "  --test <name>        Select an exact test description\n"
+                   "  --allow-empty        Permit zero selected tests\n"
+                   "  --junit <path>       Write JUnit XML\n"
+                   "  --recover-abort, -r  Best-effort in-process SIGABRT recovery\n"
                    "  -h                   Show this help text\n",
                    total_num_tests, argv[0]);
             return 0;
@@ -155,7 +189,9 @@ int baro_run(
         }
     }
 
-    if (total_num_tests == 0) {
+    }
+
+    if (total_num_tests == 0 && !allow_empty) {
         fprintf(stderr, "Zero test cases were found! This usually means that "
                         "something went wrong with test registration.\n");
         return EXIT_FAILURE;
@@ -237,6 +273,22 @@ int baro_run(
         memcpy(&tests, &baro__c.tests, sizeof(baro__c.tests));
     }
 
+    if (exact_name) {
+        if (tests.tests == baro__c.tests.tests) {
+            baro__test_list_create(&tests, total_num_tests ? total_num_tests : 1);
+            for (size_t i = 0; i < total_num_tests; i++)
+                baro__test_list_add(&tests, &baro__c.tests.tests[i]);
+        }
+        size_t selected = 0;
+        for (size_t i = 0; i < tests.size; i++)
+            if (!strcmp(tests.tests[i].tag->desc, exact_name)) tests.tests[selected++] = tests.tests[i];
+        tests.size = selected;
+    }
+    if (!tests.size && !allow_empty) {
+        fprintf(stderr, "No tests matched the selection\n");
+        if (tests.tests != baro__c.tests.tests) free(tests.tests);
+        return EXIT_FAILURE;
+    }
     size_t const num_tests = tests.size;
     if (num_tests > 0 && (num_partitions < 1 || num_partitions > num_tests)) {
         fprintf(stderr, "Invalid number of partitions %zu, value should be"
@@ -262,6 +314,14 @@ int baro_run(
             (partition_index < remainder ? partition_index : remainder);
     size_t const last_test = first_test + partition_size + (partition_index < remainder);
 
+    if (list_tests) {
+        for (size_t i = first_test; i < last_test; i++) puts(tests.tests[i].tag->desc);
+        if (tests.tests != baro__c.tests.tests) free(tests.tests);
+        return EXIT_SUCCESS;
+    }
+    struct baro__result *results = calloc(num_tests ? num_tests : 1, sizeof(*results));
+    if (!results) return EXIT_FAILURE;
+
     size_t const num_tests_to_run = last_test - first_test;
     printf("Running %zu out of %zu test%s (of %zu total)\n", num_tests_to_run, num_tests,
            num_tests > 1 ? "s" : "", total_num_tests);
@@ -280,6 +340,8 @@ int baro_run(
     // Begin running tests serially
     for (size_t i = first_test; i < last_test; i++) {
         struct baro__test const * const test = &tests.tests[i];
+        size_t const before_asserts = baro__c.num_asserts;
+        size_t const before_failed = baro__c.num_asserts_failed;
         baro__c.current_test = test;
         baro__c.current_test_failed = 0;
         baro__hash_set_clear(&baro__c.passed_subtests);
@@ -326,6 +388,10 @@ int baro_run(
 
         baro__run_cleanups();
         if (recover_abort) set_sigabrt_handler(NULL);
+        results[i].ran = 1;
+        results[i].failed = baro__c.current_test_failed;
+        results[i].asserts = baro__c.num_asserts - before_asserts;
+        results[i].asserts_failed = baro__c.num_asserts_failed - before_failed;
         baro__c.num_tests_ran++;
         if (baro__c.current_test_failed) {
             baro__c.num_tests_failed++;
@@ -358,7 +424,11 @@ int baro_run(
            baro__c.num_asserts, baro__c.num_asserts - baro__c.num_asserts_failed,
            baro__c.num_asserts_failed);
 
-    return baro__c.num_tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;
+    int report_ok = !junit_path || baro__junit(junit_path, &tests, results);
+    free(results);
+    if (tests.tests != baro__c.tests.tests) free(tests.tests);
+    free(raw_tag_filters);
+    return baro__c.num_tests_failed || !report_ok ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
 int baro_is_child(int argc, char *argv[]) {
@@ -366,4 +436,47 @@ int baro_is_child(int argc, char *argv[]) {
         if (strcmp(argv[i], "--baro-child") == 0) return 1;
     }
     return 0;
+}
+
+static void baro__typed_failure(int hard, const char *file, int line, const char *values) {
+    baro__c.current_test_failed = 1;
+    baro__c.num_asserts_failed++;
+    baro__redirect_output(&baro__c, 0);
+    printf("%s failed: %s\nAt %s:%d\n", hard ? "Require" : "Check", values, extract_file_name(file), line);
+    baro__assert_failed(hard ? BARO__ASSERT_REQUIRE : BARO__ASSERT_CHECK, 1);
+}
+void baro__typed_int(intmax_t a, intmax_t b, int hard, const char *file, int line) {
+    baro__c.num_asserts++;
+    if (a == b) return;
+    char text[160]; snprintf(text, sizeof(text), "%" PRIdMAX " == %" PRIdMAX, a, b);
+    baro__typed_failure(hard, file, line, text);
+}
+void baro__typed_uint(uintmax_t a, uintmax_t b, int hard, const char *file, int line) {
+    baro__c.num_asserts++;
+    if (a == b) return;
+    char text[160]; snprintf(text, sizeof(text), "%" PRIuMAX " == %" PRIuMAX, a, b);
+    baro__typed_failure(hard, file, line, text);
+}
+void baro__typed_ptr(const void *a, const void *b, int hard, const char *file, int line) {
+    baro__c.num_asserts++;
+    if (a == b) return;
+    char text[160]; snprintf(text, sizeof(text), "%p == %p", (void *)a, (void *)b);
+    baro__typed_failure(hard, file, line, text);
+}
+void baro__typed_double(double a, double b, int hard, const char *file, int line) {
+    baro__c.num_asserts++;
+    if (a == b) return;
+    char text[160]; snprintf(text, sizeof(text), "%.17g == %.17g", a, b);
+    baro__typed_failure(hard, file, line, text);
+}
+void baro__near(double a, double b, double absolute, double relative,
+                int hard, const char *file, int line) {
+    baro__c.num_asserts++;
+    double scale = fmax(fabs(a), fabs(b));
+    int valid = isfinite(absolute) && isfinite(relative) && absolute >= 0 && relative >= 0;
+    if (valid && (a == b || (isfinite(a) && isfinite(b) &&
+        (fabs(a - b) <= absolute || (scale > 0 && fabs(a / scale - b / scale) <= relative))))) return;
+    char text[256];
+    snprintf(text, sizeof(text), "%.17g near %.17g (absolute %.17g, relative %.17g)", a, b, absolute, relative);
+    baro__typed_failure(hard, file, line, text);
 }

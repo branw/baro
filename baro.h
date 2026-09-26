@@ -759,6 +759,12 @@ static inline void baro__assert_arr(
     baro__assert_failed(type, 1);
 }
 
+void baro__typed_int(intmax_t lhs, intmax_t rhs, int hard, const char *file, int line);
+void baro__typed_uint(uintmax_t lhs, uintmax_t rhs, int hard, const char *file, int line);
+void baro__typed_ptr(const void *lhs, const void *rhs, int hard, const char *file, int line);
+void baro__typed_double(double lhs, double rhs, int hard, const char *file, int line);
+void baro__near(double lhs, double rhs, double absolute, double relative,
+                int hard, const char *file, int line);
 // Turn the regular assert.h assert() into a baro assertion. This is a
 // best-effort mechanism that only works in files that include <baro.h> (after
 // including <assert.h>).
@@ -1070,7 +1076,40 @@ BARO__X((__VA_ARGS__))
 (__VA_ARGS__)
 #endif//_MSC_VER
 
+// Typed assertions deliberately convert operands to the named type.
+#ifdef BARO_ENABLE
+#define BARO__TYPED(kind, a, b, hard) baro__typed_##kind((a), (b), hard, __FILE__, __LINE__)
+#define BARO__NEAR(a, b, abs_tol, rel_tol, hard) baro__near((a), (b), (abs_tol), (rel_tol), hard, __FILE__, __LINE__)
+#else
+#define BARO__TYPED(kind, a, b, hard) do { (void)(a); (void)(b); } while (0)
+#define BARO__NEAR(a, b, abs_tol, rel_tol, hard) do { (void)(a); (void)(b); (void)(abs_tol); (void)(rel_tol); } while (0)
+#endif
+#define BARO_CHECK_INT_EQ(a, b) BARO__TYPED(int, a, b, 0)
+#define BARO_REQUIRE_INT_EQ(a, b) BARO__TYPED(int, a, b, 1)
+#define BARO_CHECK_UINT_EQ(a, b) BARO__TYPED(uint, a, b, 0)
+#define BARO_REQUIRE_UINT_EQ(a, b) BARO__TYPED(uint, a, b, 1)
+#define BARO_CHECK_PTR_EQ(a, b) BARO__TYPED(ptr, a, b, 0)
+#define BARO_REQUIRE_PTR_EQ(a, b) BARO__TYPED(ptr, a, b, 1)
+#define BARO_CHECK_DOUBLE_EQ(a, b) BARO__TYPED(double, a, b, 0)
+#define BARO_REQUIRE_DOUBLE_EQ(a, b) BARO__TYPED(double, a, b, 1)
+#define BARO_CHECK_NEAR(a, b, abs_tol, rel_tol) BARO__NEAR(a, b, abs_tol, rel_tol, 0)
+#define BARO_REQUIRE_NEAR(a, b, abs_tol, rel_tol) BARO__NEAR(a, b, abs_tol, rel_tol, 1)
+// ARR compares object representations; BYTES makes that intent explicit.
+#define BARO_CHECK_BYTES_EQ(a, b, n) BARO_CHECK_ARR_EQ((const uint8_t *)(a), (const uint8_t *)(b), n)
+#define BARO_REQUIRE_BYTES_EQ(a, b, n) BARO_REQUIRE_ARR_EQ((const uint8_t *)(a), (const uint8_t *)(b), n)
 #ifndef BARO_NO_SHORT
+#define CHECK_INT_EQ BARO_CHECK_INT_EQ
+#define CHECK_UINT_EQ BARO_CHECK_UINT_EQ
+#define CHECK_PTR_EQ BARO_CHECK_PTR_EQ
+#define CHECK_DOUBLE_EQ BARO_CHECK_DOUBLE_EQ
+#define REQUIRE_INT_EQ BARO_REQUIRE_INT_EQ
+#define REQUIRE_UINT_EQ BARO_REQUIRE_UINT_EQ
+#define REQUIRE_PTR_EQ BARO_REQUIRE_PTR_EQ
+#define REQUIRE_DOUBLE_EQ BARO_REQUIRE_DOUBLE_EQ
+#define CHECK_NEAR BARO_CHECK_NEAR
+#define REQUIRE_NEAR BARO_REQUIRE_NEAR
+#define CHECK_BYTES_EQ BARO_CHECK_BYTES_EQ
+#define REQUIRE_BYTES_EQ BARO_REQUIRE_BYTES_EQ
 #define TEST BARO_TEST
 #define SUBTEST BARO_SUBTEST
 #define CHECK BARO_CHECK
