@@ -17,7 +17,8 @@ function(_baro_literal out value)
     set(${out} "[${eq}[${value}]${eq}]" PARENT_SCOPE)
 endfunction()
 
-# Quoted code arguments preserve semicolons, control characters, and dollars.
+# Runtime code uses escaped quotes: bracket arguments normalize CRLF when read
+# from generated files. Keep literals above for generator-expression parameters.
 function(_baro_code_quote out value)
     string(REPLACE "\\" "\\\\" value "${value}")
     string(REPLACE "\"" "\\\"" value "${value}")

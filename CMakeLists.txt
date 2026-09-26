@@ -75,8 +75,6 @@ macro(AddExampleTest test expected_status)
         "example_${test}"
         "examples/${test}.c")
     target_link_libraries("example_${test}" PRIVATE baro::main)
-    target_compile_definitions("example_${test}" PRIVATE BARO_ENABLE)
-    target_include_directories("example_${test}" PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME "check_example_${test}"
         COMMAND ${CMAKE_COMMAND}
             "-DPROGRAM=$<TARGET_FILE:example_${test}>"
@@ -99,13 +97,8 @@ if(NOT MSVC)
     target_compile_definitions(example_assert PRIVATE BARO_REPLACE_ASSERT)
 endif()
 
-# Excluded from the suite because it takes so long to build
-#AddExampleTest(stress_tests 1)
-
 add_executable(baro_regressions tests/regressions.c)
 target_link_libraries(baro_regressions PRIVATE baro::main)
-target_include_directories(baro_regressions PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_definitions(baro_regressions PRIVATE BARO_ENABLE)
 foreach(case numeric float_failure require output suppression descriptors many
              abort cleanup cleanup_failure null_strings null_failures capture4095 capture4096 capture4097
              capture9000 capture_isolation)

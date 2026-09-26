@@ -19,6 +19,27 @@ static size_t baro__positive(const char *text) {
     return (size_t)value;
 }
 
+/* Match comma-separated tags directly in argv; no token copies or platform
+ * tokenizer are needed. Empty separators are ignored, as with strtok. */
+static int baro__matches_tags(const char *description, const char *filters) {
+    if (!filters) return 1;
+    int matched = 0;
+    while (*filters) {
+        filters += strspn(filters, ",");
+        if (!*filters) break;
+        size_t length = strcspn(filters, ",");
+        const char *end = filters + length;
+        filters += strspn(filters, " \t\n\r");
+        if (filters >= end) return -1;
+        length = (size_t)(end - filters);
+        for (const char *tag = description; (tag = strchr(tag, '[')) != NULL; tag++) {
+            if (!strncmp(tag + 1, filters, length) && tag[length + 1] == ']') matched = 1;
+        }
+        filters = end;
+    }
+    return matched;
+}
+
 struct baro__result {
     int ran, failed;
     size_t asserts, asserts_failed;
@@ -212,7 +233,7 @@ int baro_run(
     int recover_abort = 0;
     size_t num_partitions = 1;
     size_t cur_partition = 1;
-    char *raw_tag_filters = NULL;
+    const char *raw_tag_filters = NULL;
     const char *exact_name = NULL, *junit_path = NULL;
     int list_tests = 0, allow_empty = 0, isolate = 0;
     size_t child_id = 0, jobs = 1, test_id = 0;
@@ -311,12 +332,7 @@ int baro_run(
 
         case 't':
             if (!*baro__optarg) { fprintf(stderr, "Empty tag filter\n"); return EXIT_FAILURE; }
-            free(raw_tag_filters);
-#ifdef _WIN32
-            raw_tag_filters = _strdup(baro__optarg);
-#else
-            raw_tag_filters = strdup(baro__optarg);
-#endif
+            raw_tag_filters = baro__optarg;
             break;
 
         case 'h':
@@ -392,93 +408,20 @@ int baro_run(
         return EXIT_FAILURE;
     }
 
-    // Filter out tests
-    struct baro__test_list tests;
-    if (raw_tag_filters != NULL && raw_tag_filters[0] != '\0') {
-        baro__test_list_create(&tests,baro__c.tests.size);
-
-        // Parse the filter list
-        size_t num_filters = 1;
-        char *p = raw_tag_filters;
-        while (*p) {
-            if (*p++ == ',') {
-                num_filters++;
-            }
-        }
-
-        char **filters = malloc(num_filters * sizeof(char *));
-
-        char* next_token = NULL;
-#ifdef _WIN32
-        p = strtok_s(raw_tag_filters, ",", &next_token);
-#else
-        p = strtok_r(raw_tag_filters, ",", &next_token);
-#endif
-        for (size_t i = 0; i < num_filters; i++) {
-            if (p == NULL) {
-                filters[i] = NULL;
-                continue;
-            }
-
-            // Skip whitespace
-            while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
-                p++;
-            }
-
-            size_t const filter_len = strlen(p);
-            if (filter_len == 0) {
-                fprintf(stderr, "Invalid filter list\n");
-                return EXIT_FAILURE;
-            }
-
-            filters[i] = malloc(filter_len + 2 + 1);
-            snprintf(filters[i], filter_len + 2 + 1, "[%s]", p);
-
-#ifdef _WIN32
-            p = strtok_s(NULL, ",", &next_token);
-#else
-            p = strtok_r(NULL, ",", &next_token);
-#endif
-        }
-
-        // Copy over tests that match the filters
-        for (size_t i = 0; i < total_num_tests; i++) {
-            struct baro__test const *test = &baro__c.tests.tests[i];
-
-            for (size_t j = 0; j < num_filters; j++) {
-                char const *filter = filters[j];
-                if (filter != NULL && strstr(test->tag->desc, filter) != NULL) {
-                    baro__test_list_add(&tests, test);
-                    break;
-                }
-            }
-        }
-
-        // Clean up
-        for (size_t i = 0; i < num_filters; i++) {
-            if (filters[i] != NULL) {
-                free(filters[i]);
-            }
-        }
-        free(filters);
-
-        free(raw_tag_filters);
-        raw_tag_filters = NULL;
-    } else {
-        memcpy(&tests, &baro__c.tests, sizeof(baro__c.tests));
+    // The registry is already sorted. Select once, preserving that order.
+    if (baro__matches_tags("", raw_tag_filters) < 0) {
+        fprintf(stderr, "Invalid filter list\n");
+        return EXIT_FAILURE;
     }
-
-    if (exact_name || test_id) {
-        if (tests.tests == baro__c.tests.tests) {
-            baro__test_list_create(&tests, total_num_tests ? total_num_tests : 1);
-            for (size_t i = 0; i < total_num_tests; i++)
-                baro__test_list_add(&tests, &baro__c.tests.tests[i]);
+    struct baro__test_list tests = baro__c.tests;
+    if (raw_tag_filters || exact_name || test_id) {
+        baro__test_list_create(&tests, total_num_tests ? total_num_tests : 1);
+        for (size_t i = 0; i < total_num_tests; i++) {
+            const struct baro__test *test = &baro__c.tests.tests[i];
+            if (baro__matches_tags(test->tag->desc, raw_tag_filters) &&
+                (!exact_name || !strcmp(test->tag->desc, exact_name)) &&
+                (!test_id || test->id == test_id)) baro__test_list_add(&tests, test);
         }
-        size_t selected = 0;
-        for (size_t i = 0; i < tests.size; i++)
-            if ((!exact_name || !strcmp(tests.tests[i].tag->desc, exact_name)) &&
-                (!test_id || tests.tests[i].id == test_id)) tests.tests[selected++] = tests.tests[i];
-        tests.size = selected;
     }
     if (!tests.size && !allow_empty) {
         fprintf(stderr, "No tests matched the selection\n");
@@ -497,11 +440,6 @@ int baro_run(
                         " and %zu inclusive\n", cur_partition, num_partitions);
         return EXIT_FAILURE;
     }
-
-    baro__test_list_sort(&baro__c.tests);
-    // Sort the list of tests so that we get a deterministic order of execution
-    // across different compilers and runtimes
-    baro__test_list_sort(&tests);
 
     // Partition the tests if we are in a multiprocess workflow
     size_t const partition_size = num_tests / num_partitions;
@@ -672,7 +610,6 @@ int baro_run(
     int report_ok = !junit_path || baro__junit(junit_path, &tests, results);
     free(results);
     if (tests.tests != baro__c.tests.tests) free(tests.tests);
-    free(raw_tag_filters);
     if (ctest_mode && !baro__c.num_tests_failed && report_ok)
         report_ok = baro__ctest_complete();
     if (baro__ctest_result_fd >= 0) {

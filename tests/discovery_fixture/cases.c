@@ -9,7 +9,7 @@
 #endif
 TEST("[duplicate] same name") { CHECK(1); }
 TEST("[duplicate] same name") { CHECK(0); }
-TEST("[pass][semi;tag] quote \" slash \\ semi; newline\n${not_cmake} ]=]") { CHECK(1); }
+TEST("[pass][semi;tag] quote \" slash \\ semi; newline\nCRLF\r\n${not_cmake} ]=]") { CHECK(1); }
 TEST("[pass][context] environment and directory") {
     CHECK_STR_EQ(getenv("BARO_VALUE"), "alpha;beta");
     CHECK_STR_EQ(getenv("BARO_DOLLAR"), "${literal}");
