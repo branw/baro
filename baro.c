@@ -3,10 +3,10 @@
 
 struct baro__context baro__c = {0};
 
-char *optarg;
+static char *baro__optarg;
 
 // A small getopt-like function for parsing short CLI arguments
-int getopt(
+static int baro__getopt(
         int const num_args,
         char * const * args,
         char const * opts) {
@@ -41,19 +41,19 @@ int getopt(
     }
 
     if (*++cur_opt != ':') {
-        optarg = NULL;
+        baro__optarg = NULL;
         if (!*arg) {
             ++cur_arg;
         }
     } else {
         if (*arg) {
-            optarg = arg;
+            baro__optarg = arg;
         } else if (num_args <= ++cur_arg) {
             arg = "";
             fprintf(stderr, "Option requires an argument: %c\n", opt);
             return 0;
         } else {
-            optarg = args[cur_arg];
+            baro__optarg = args[cur_arg];
         }
         arg = "";
         ++cur_arg;
@@ -83,7 +83,7 @@ static void handle_signal(int signum) {
     }
 }
 
-int main(
+int baro_run(
         int argc,
         char *argv[]) {
     int show_passed_tests = 0;
@@ -99,15 +99,15 @@ int main(
 
     // Parse command line options
     int c;
-    while ((c = getopt(argc, argv, "hraoesp:n:t:")) != -1) {
+    while ((c = baro__getopt(argc, argv, "hraoesp:n:t:")) != -1) {
         switch (c) {
         case 'r': recover_abort = 1; break;
         case 'p':
-            num_partitions = strtol(optarg, NULL, 10);
+            num_partitions = strtol(baro__optarg, NULL, 10);
             break;
 
         case 'n':
-            cur_partition = strtol(optarg, NULL, 10);
+            cur_partition = strtol(baro__optarg, NULL, 10);
             break;
 
         case 'a':
@@ -128,9 +128,9 @@ int main(
 
         case 't':
 #ifdef _WIN32
-            raw_tag_filters = _strdup(optarg);
+            raw_tag_filters = _strdup(baro__optarg);
 #else
-            raw_tag_filters = strdup(optarg);
+            raw_tag_filters = strdup(baro__optarg);
 #endif
             break;
 
@@ -359,4 +359,11 @@ int main(
            baro__c.num_asserts_failed);
 
     return baro__c.num_tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+
+int baro_is_child(int argc, char *argv[]) {
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--baro-child") == 0) return 1;
+    }
+    return 0;
 }

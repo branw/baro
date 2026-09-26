@@ -1,38 +1,59 @@
 cmake_minimum_required(VERSION 3.13)
-project(baro C)
-
+project(baro VERSION 0.1.0 LANGUAGES C)
 set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 
-enable_testing()
-
-add_executable(baro_test baro.c baro_test.c)
-target_compile_definitions(baro_test PRIVATE BARO_ENABLE BARO_SELF_TEST)
-if(MSVC)
-    # TODO remove static linking once ASan is in the PATH
-    target_compile_options(baro_test PRIVATE /MTd /fsanitize=address)
-    target_link_options(baro_test PRIVATE /fsanitize=address)
-else()
-    target_compile_options(baro_test PRIVATE -fsanitize=address,undefined)
-    target_link_options(baro_test PRIVATE -fsanitize=address,undefined)
+set(baro_top_level OFF)
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    set(baro_top_level ON)
 endif()
+option(BARO_BUILD_TESTS "Build Baro's own tests" ${baro_top_level})
+option(BARO_SANITIZERS "Instrument Baro and its consumers with sanitizers" OFF)
 
-add_test(self_tests baro_test)
+add_library(baro STATIC baro.c)
+add_library(baro::baro ALIAS baro)
+target_compile_definitions(baro PUBLIC BARO_ENABLE)
+target_include_directories(baro PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>)
+if(NOT WIN32)
+    target_link_libraries(baro PUBLIC m)
+endif()
+add_library(baro_main STATIC baro_main.c)
+set_target_properties(baro_main PROPERTIES EXPORT_NAME main)
+add_library(baro::main ALIAS baro_main)
+target_link_libraries(baro_main PUBLIC baro)
+if(BARO_SANITIZERS)
+    if(MSVC)
+        target_compile_options(baro PUBLIC /fsanitize=address)
+    else()
+        target_compile_options(baro PUBLIC -fsanitize=address,undefined)
+        target_link_options(baro PUBLIC -fsanitize=address,undefined)
+    endif()
+endif()
+include(GNUInstallDirs)
+install(TARGETS baro baro_main EXPORT baroTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(FILES baro.h DESTINATION include)
+install(EXPORT baroTargets NAMESPACE baro:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/baro)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/baroConfig.cmake" "include(\"\${CMAKE_CURRENT_LIST_DIR}/baroTargets.cmake\")\n")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/baroConfig.cmake" DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/baro)
+
+if(NOT BARO_BUILD_TESTS)
+    return()
+endif()
+enable_testing()
+add_executable(baro_test baro_test.c)
+target_link_libraries(baro_test PRIVATE baro::main)
+target_compile_definitions(baro_test PRIVATE BARO_SELF_TEST)
+add_test(NAME self_tests COMMAND baro_test)
 
 macro(AddExampleTest test expected_status)
     add_executable(
         "example_${test}"
-        "examples/${test}.c" baro.c)
+        "examples/${test}.c")
+    target_link_libraries("example_${test}" PRIVATE baro::main)
     target_compile_definitions("example_${test}" PRIVATE BARO_ENABLE)
     target_include_directories("example_${test}" PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    if(MSVC)
-        # TODO remove static linking once ASan is in the PATH
-        target_compile_options("example_${test}" PRIVATE /MTd /fsanitize=address)
-        target_link_options("example_${test}" PRIVATE /fsanitize=address)
-    else()
-        target_compile_options("example_${test}" PRIVATE -fsanitize=address,undefined)
-        target_link_options("example_${test}" PRIVATE -fsanitize=address,undefined)
-    endif()
-
     add_test(NAME "check_example_${test}"
         COMMAND ${CMAKE_COMMAND}
             "-DPROGRAM=$<TARGET_FILE:example_${test}>"
@@ -58,16 +79,10 @@ endif()
 # Excluded from the suite because it takes so long to build
 #AddExampleTest(stress_tests 1)
 
-add_executable(baro_regressions tests/regressions.c baro.c)
+add_executable(baro_regressions tests/regressions.c)
+target_link_libraries(baro_regressions PRIVATE baro::main)
 target_include_directories(baro_regressions PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(baro_regressions PRIVATE BARO_ENABLE)
-if(MSVC)
-    target_compile_options(baro_regressions PRIVATE /MTd /fsanitize=address)
-    target_link_options(baro_regressions PRIVATE /fsanitize=address)
-else()
-    target_compile_options(baro_regressions PRIVATE -fsanitize=address,undefined)
-    target_link_options(baro_regressions PRIVATE -fsanitize=address,undefined)
-endif()
 foreach(case numeric float_failure require output suppression descriptors many
              abort cleanup null_strings null_failures capture4095 capture4096 capture4097
              capture9000 capture_isolation)
@@ -91,3 +106,9 @@ foreach(partition RANGE 1 6)
             "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/regression_partition_${partition}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_regression.cmake")
 endforeach()
+
+add_test(NAME consumer_integration COMMAND ${CMAKE_COMMAND}
+    "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DBUILD=${CMAKE_CURRENT_BINARY_DIR}"
+    "-DCONFIG=$<CONFIG>"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer.cmake")

@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Call once per process. Custom runners must dispatch child mode before setup.
+int baro_run(int argc, char *argv[]);
+int baro_is_child(int argc, char *argv[]);
+
 #ifdef BARO_ENABLE
 
 #include <setjmp.h>
