@@ -9,6 +9,7 @@
 #include <math.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -247,6 +248,17 @@ static inline void baro__test_list_sort(
 // Maximum number of bytes to record from stdout per test
 #define BARO__STDOUT_BUF_SIZE 4096
 
+// A standard stream held in a temporary file while a test runs.
+struct baro__capture {
+    FILE *stream;
+    // Duplicate of the stream's own descriptor while capturing, otherwise -1.
+    int real;
+    FILE *file;
+    // The end of what was captured, kept when capture stops.
+    size_t size;
+    char tail[BARO__STDOUT_BUF_SIZE];
+};
+
 struct baro__cleanup {
     struct baro__cleanup *next;
     void (*callback)(void *);
@@ -290,10 +302,8 @@ struct baro__context {
 
     int compiler_diagnostics;
     int suppress_stdout;
-    int real_stdout;
-    FILE *stdout_capture;
-    size_t stdout_size;
-    char stdout_buffer[BARO__STDOUT_BUF_SIZE];
+    int capture_stderr;
+    struct baro__capture out, err;
 };
 
 static struct baro__context baro__c;
@@ -318,10 +328,12 @@ static inline void baro__context_create(
     context->escaped_subtest = NULL;
 
     context->suppress_stdout = 1;
-    context->real_stdout = -1;
-    context->stdout_capture = NULL;
-    context->stdout_size = 0;
-    memset(context->stdout_buffer, 0, BARO__STDOUT_BUF_SIZE);
+    context->capture_stderr = 0;
+    memset(&context->out, 0, sizeof(context->out));
+    memset(&context->err, 0, sizeof(context->err));
+    context->out.stream = stdout;
+    context->err.stream = stderr;
+    context->out.real = context->err.real = -1;
 }
 
 #ifdef _WIN32
@@ -392,54 +404,143 @@ static inline void baro__disable_output(
     setvbuf(file, NULL, _IONBF, 0);
 }
 
+// Report a failure of the runner itself. Its message must reach the real
+// stderr even while a test's stderr is being captured.
+static void baro__die(const char *message) {
+    int const error = errno;
+    if (baro__c.err.real != -1) {
+        fflush(stderr);
+        BARO__DUP2(baro__c.err.real, BARO__FILENO(stderr));
+    }
+    errno = error;
+    perror(message);
+    exit(EXIT_FAILURE);
+}
+
 // Capture into a temporary file, independent of libc's private stream buffer.
+static void baro__capture_start(struct baro__capture * const capture) {
+    if (capture->real != -1) {
+        return;
+    }
+    if (fflush(capture->stream) != 0) {
+        baro__die("Failed to flush output before capturing it");
+    }
+    capture->file = tmpfile();
+    capture->real = BARO__DUP(BARO__FILENO(capture->stream));
+    if (!capture->file || capture->real == -1 ||
+            BARO__DUP2(BARO__FILENO(capture->file), BARO__FILENO(capture->stream)) == -1) {
+        // The stream was never redirected, so there is nothing to restore.
+        capture->real = -1;
+        baro__die("Failed to capture output");
+    }
+    capture->size = 0;
+}
+
 // On restoration retain only the last BARO__STDOUT_BUF_SIZE bytes.
+static void baro__capture_stop(struct baro__capture * const capture) {
+    if (capture->real == -1) {
+        return;
+    }
+    int const restored = fflush(capture->stream) == 0 &&
+            BARO__DUP2(capture->real, BARO__FILENO(capture->stream)) != -1;
+    BARO__CLOSE(capture->real);
+    capture->real = -1;
+    if (!restored) {
+        baro__die("Failed to restore captured output");
+    }
+
+    FILE * const file = capture->file;
+    capture->file = NULL;
+    if (fseek(file, 0, SEEK_END) != 0) {
+        baro__die("Failed to seek captured output");
+    }
+    long const end = ftell(file);
+    if (end < 0 || fseek(file,
+            end > BARO__STDOUT_BUF_SIZE ? end - BARO__STDOUT_BUF_SIZE : 0,
+            SEEK_SET) != 0) {
+        baro__die("Failed to seek captured output");
+    }
+    capture->size = fread(capture->tail, 1, BARO__STDOUT_BUF_SIZE, file);
+    if (ferror(file)) {
+        baro__die("Failed to read captured output");
+    }
+    fclose(file);
+}
+
+// Stop capturing, or resume whichever streams this run captures.
 static inline void baro__redirect_output(
         struct baro__context * const context,
         int const enable) {
-    if (enable && context->real_stdout == -1) {
-        if (fflush(stdout) != 0) {
-            perror("Failed to flush stdout");
-            exit(EXIT_FAILURE);
-        }
-        context->stdout_capture = tmpfile();
-        context->real_stdout = BARO__DUP(BARO__FILENO(stdout));
-        if (!context->stdout_capture || context->real_stdout == -1 ||
-                BARO__DUP2(BARO__FILENO(context->stdout_capture), BARO__FILENO(stdout)) == -1) {
-            perror("Failed to capture stdout");
-            exit(EXIT_FAILURE);
-        }
-        context->stdout_size = 0;
-    } else if (!enable && context->real_stdout != -1) {
-        if (fflush(stdout) != 0 ||
-                BARO__DUP2(context->real_stdout, BARO__FILENO(stdout)) == -1) {
-            perror("Failed to restore stdout");
-            exit(EXIT_FAILURE);
-        }
-        BARO__CLOSE(context->real_stdout);
-        context->real_stdout = -1;
-
-        FILE *capture = context->stdout_capture;
-        if (fseek(capture, 0, SEEK_END) != 0) {
-            perror("Failed to seek captured output");
-            exit(EXIT_FAILURE);
-        }
-        long const end = ftell(capture);
-        if (end < 0 || fseek(capture,
-                end > BARO__STDOUT_BUF_SIZE ? end - BARO__STDOUT_BUF_SIZE : 0,
-                SEEK_SET) != 0) {
-            perror("Failed to seek captured output");
-            exit(EXIT_FAILURE);
-        }
-        context->stdout_size = fread(context->stdout_buffer, 1,
-                                    BARO__STDOUT_BUF_SIZE, capture);
-        if (ferror(capture)) {
-            perror("Failed to read captured output");
-            exit(EXIT_FAILURE);
-        }
-        fclose(capture);
-        context->stdout_capture = NULL;
+    if (!enable) {
+        baro__capture_stop(&context->out);
+        baro__capture_stop(&context->err);
+        return;
     }
+    if (context->suppress_stdout) baro__capture_start(&context->out);
+    if (context->capture_stderr) baro__capture_start(&context->err);
+}
+
+// The text of the current test's diagnostics, kept for the JUnit report.
+static struct {
+    int enabled;
+    char *text;
+    size_t size, capacity;
+} baro__detail;
+
+static void baro__detail_append(const char *data, size_t size) {
+    if (!baro__detail.enabled) {
+        return;
+    }
+    if (baro__detail.size + size + 1 > baro__detail.capacity) {
+        size_t const capacity = (baro__detail.size + size + 1) * 2;
+        char * const text = realloc(baro__detail.text, capacity);
+        if (!text) {
+            return; // The report loses detail; the console output is unaffected.
+        }
+        baro__detail.text = text;
+        baro__detail.capacity = capacity;
+    }
+    memcpy(baro__detail.text + baro__detail.size, data, size);
+    baro__detail.size += size;
+    baro__detail.text[baro__detail.size] = '\0';
+}
+
+// Print one piece of a failure's diagnostics.
+static void baro__say(const char *format, ...) {
+    char stack[512];
+    va_list args;
+    va_start(args, format);
+    int const length = vsnprintf(stack, sizeof(stack), format, args);
+    va_end(args);
+    if (length < 0) {
+        return;
+    }
+    char *text = stack;
+    if ((size_t)length >= sizeof(stack)) {
+        text = malloc((size_t)length + 1);
+        if (!text) {
+            return;
+        }
+        va_start(args, format);
+        vsnprintf(text, (size_t)length + 1, format, args);
+        va_end(args);
+    }
+    fwrite(text, 1, (size_t)length, stdout);
+    baro__detail_append(text, (size_t)length);
+    if (text != stack) {
+        free(text);
+    }
+}
+
+static void baro__say_captured(const char *title, struct baro__capture * const capture) {
+    if (!capture->size) {
+        return;
+    }
+    baro__say("%s\n", title);
+    fwrite(capture->tail, 1, capture->size, stdout);
+    baro__detail_append(capture->tail, capture->size);
+    baro__say("\n");
+    capture->size = 0;
 }
 
 void baro__register_test_kind(
@@ -547,33 +648,29 @@ static inline char const *baro__file_name(
 
 static inline void baro__report_location(const char *file, int line) {
     if (baro__c.compiler_diagnostics)
-        printf("%s:%d: error: assertion failed\n", file, line);
+        baro__say("%s:%d: error: assertion failed\n", file, line);
     else
-        printf("At %s:%d\n", baro__file_name(file), line);
+        baro__say("At %s:%d\n", baro__file_name(file), line);
 }
 
 static inline void baro__assert_failed(
         enum baro__assert_type const type, int const jump) {
     struct baro__test const * const test = baro__c.current_test;
-    printf("  In: %s (%s:%d)\n",
+    baro__say("  In: %s (%s:%d)\n",
            test->tag->desc, baro__file_name(test->tag->file_path), test->tag->line_num);
 
     for (size_t i = 0; i < baro__c.subtest_stack.size; i++) {
         struct baro__tag const * const subtest_tag = baro__c.subtest_stack.tags[i];
-        printf("%*cUnder: %s (%s:%d)\n", (int) (i + 2) * 2, ' ',
+        baro__say("%*cUnder: %s (%s:%d)\n", (int) (i + 2) * 2, ' ',
                subtest_tag->desc, baro__file_name(subtest_tag->file_path), subtest_tag->line_num);
     }
 
-    if (baro__c.stdout_size) {
-        printf("Captured output:\n");
-        fwrite(baro__c.stdout_buffer, 1, baro__c.stdout_size, stdout);
-        putchar('\n');
-        baro__c.stdout_size = 0;
-    }
+    baro__say_captured("Captured output:", &baro__c.out);
+    baro__say_captured("Captured stderr:", &baro__c.err);
 
-    printf(BARO__SEPARATOR);
+    baro__say(BARO__SEPARATOR);
 
-    baro__redirect_output(&baro__c, baro__c.suppress_stdout);
+    baro__redirect_output(&baro__c, 1);
 
     if (type == BARO__ASSERT_REQUIRE && jump) {
         BARO__LONGJMP(baro__c.env, BARO__JMP_REQUIRE);
@@ -602,8 +699,8 @@ void baro__assert1(
 
     char const * const assert_type = (type == BARO__ASSERT_REQUIRE ? "Require" : "Check");
     char const * const op = (expected_value == BARO__EXPECTING_TRUE ? " != 0" : " == 0");
-    printf("%s failed:%s%s\n", assert_type, *desc ? " " : "", desc);
-    printf("    %s%s\n", value_str, op);
+    baro__say("%s failed:%s%s\n", assert_type, *desc ? " " : "", desc);
+    baro__say("    %s%s\n", value_str, op);
     baro__report_location(file_path, line_num);
 
     baro__assert_failed(type, 1);
@@ -641,8 +738,8 @@ void baro__assert2(
             cond == BARO__ASSERT_GE ? ">=" : "";
 
     char const * const assert_type = (type == BARO__ASSERT_REQUIRE ? "Require" : "Check");
-    printf("%s failed:%s%s\n", assert_type, *desc ? " " : "", desc);
-    printf("    %s %s %s\n", lhs_str, op, rhs_str);
+    baro__say("%s failed:%s%s\n", assert_type, *desc ? " " : "", desc);
+    baro__say("    %s %s %s\n", lhs_str, op, rhs_str);
     baro__report_location(file_path, line_num);
 
     baro__assert_failed(type, 1);
@@ -699,9 +796,9 @@ void baro__assert_str(
         str_padding = expanded_len - str_len;
     }
 
-    printf("%s%s failed:%s%s\n", assert_type, sensitivity, *desc ? " " : "", desc);
-    printf("    %s %*s%s %s\n", lhs_str, (int)str_padding, "", op, rhs_str);
-    printf("==> %s%s%s %*s%s %s%s%s\n", lhs_wrap, lhs, lhs_wrap, (int)expanded_padding, "", op, rhs_wrap, rhs, rhs_wrap);
+    baro__say("%s%s failed:%s%s\n", assert_type, sensitivity, *desc ? " " : "", desc);
+    baro__say("    %s %*s%s %s\n", lhs_str, (int)str_padding, "", op, rhs_str);
+    baro__say("==> %s%s%s %*s%s %s%s%s\n", lhs_wrap, lhs, lhs_wrap, (int)expanded_padding, "", op, rhs_wrap, rhs, rhs_wrap);
     baro__report_location(file_path, line_num);
 
     baro__assert_failed(type, 1);
@@ -768,9 +865,9 @@ void baro__assert_arr(
     *p = '\0';
     *q = '\0';
 
-    printf("%s array failed:%s%s\n", assert_type, *desc ? " " : "", desc);
-    printf("    %s[%zu] %s %s[%zu]\n", lhs_str, element_index, op, rhs_str, element_index);
-    printf("==> 0x%s %s 0x%s\n", lhs_val_str, op, rhs_val_str);
+    baro__say("%s array failed:%s%s\n", assert_type, *desc ? " " : "", desc);
+    baro__say("    %s[%zu] %s %s[%zu]\n", lhs_str, element_index, op, rhs_str, element_index);
+    baro__say("==> 0x%s %s 0x%s\n", lhs_val_str, op, rhs_val_str);
     baro__report_location(file_path, line_num);
 
     free(lhs_val_str);
@@ -816,6 +913,8 @@ struct baro__result {
     size_t asserts, asserts_failed;
     const char *reason;
     double seconds;
+    // Diagnostics of a failed test for the JUnit report; owned by the result.
+    char *detail;
 };
 
 static const char *baro__value(int *arg, int argc, char *argv[]) {
@@ -864,18 +963,18 @@ static void baro__json_string(const char *text, size_t size) {
     for (size_t i = 0; i < size; i++) {
         unsigned char c = (unsigned char)text[i];
         if (c == '"' || c == '\\') { putchar('\\'); putchar(c); }
-        else if (c < 32) printf("\\u%04x", c);
+        else if (c < 32) baro__say("\\u%04x", c);
         else putchar(c);
     }
     putchar('"');
 }
 
 static void baro__json_test(const struct baro__test *test) {
-    printf("{\"id\":%zu,\"name\":", test->id);
+    baro__say("{\"id\":%zu,\"name\":", test->id);
     baro__json_string(test->tag->desc, strlen(test->tag->desc));
-    printf(",\"file\":");
+    baro__say(",\"file\":");
     baro__json_string(test->tag->file_path, strlen(test->tag->file_path));
-    printf(",\"line\":%d,\"expect_abort\":%s,\"tags\":[", test->tag->line_num,
+    baro__say(",\"line\":%d,\"expect_abort\":%s,\"tags\":[", test->tag->line_num,
            test->expect_abort ? "true" : "false");
     int comma = 0;
     const char *cursor = test->tag->desc;
@@ -888,7 +987,24 @@ static void baro__json_test(const struct baro__test *test) {
         }
         cursor = end + 1;
     }
-    printf("]}");
+    baro__say("]}");
+}
+
+// Length of the valid UTF-8 sequence at p, or 0. XML has no way to carry a
+// byte that is not part of one.
+static size_t baro__utf8(const unsigned char *p) {
+    unsigned char const lead = p[0];
+    size_t const length = lead < 0x80 ? 1 : (lead & 0xE0) == 0xC0 ? 2 :
+                          (lead & 0xF0) == 0xE0 ? 3 : (lead & 0xF8) == 0xF0 ? 4 : 0;
+    uint32_t code = length == 1 ? lead : lead & (0xFFu >> (length + 1));
+    for (size_t i = 1; i < length; i++) {
+        if ((p[i] & 0xC0) != 0x80) return 0;
+        code = (code << 6) | (p[i] & 0x3Fu);
+    }
+    static const uint32_t smallest[] = {0, 0, 0x80, 0x800, 0x10000};
+    if (!length || code < smallest[length] || code > 0x10FFFF ||
+        (code >= 0xD800 && code <= 0xDFFF) || code == 0xFFFE || code == 0xFFFF) return 0;
+    return length;
 }
 
 static void baro__xml(FILE *out, const char *text) {
@@ -899,7 +1015,12 @@ static void baro__xml(FILE *out, const char *text) {
         case '>': fputs("&gt;", out); break;
         case '\"': fputs("&quot;", out); break;
         case '\'': fputs("&apos;", out); break;
-        default: if (*p >= 32 || *p == '\n' || *p == '\t') fputc(*p, out);
+        default: {
+            size_t const length = baro__utf8(p);
+            if (!length) fputc('?', out);
+            else if (*p >= 32 || *p == '\n' || *p == '\t') fwrite(p, 1, length, out);
+            if (length) p += length - 1;
+        }
         }
     }
 }
@@ -932,7 +1053,10 @@ static int baro__junit(const char *path, struct baro__test_list *tests,
         if (results[i].failed) {
             fputs("<failure message=\"", out);
             baro__xml(out, results[i].reason ? results[i].reason : "Assertion failure");
-            fprintf(out, "\">%zu failed assertions</failure>", results[i].asserts_failed);
+            fputs("\">", out);
+            if (results[i].detail) baro__xml(out, results[i].detail);
+            else fprintf(out, "%zu failed assertions", results[i].asserts_failed);
+            fputs("</failure>", out);
         }
         fputs("</testcase>\n", out);
     }
@@ -971,8 +1095,8 @@ static void baro__subtest_error(struct baro__tag const *tag, char const *message
 
     baro__redirect_output(&baro__c, 0);
 
-    printf("Subtest error: %s\n", message);
-    printf("    %s\n", tag->desc);
+    baro__say("Subtest error: %s\n", message);
+    baro__say("    %s\n", tag->desc);
     baro__report_location(tag->file_path, tag->line_num);
     baro__assert_failed(BARO__ASSERT_CHECK, 0);
 }
@@ -998,7 +1122,7 @@ static void baro__run_one(const struct baro__test *test, int recover_abort) {
 
         baro__redirect_output(&baro__c, 0);
 
-        printf("Assertion failed! Caught SIGABRT\n");
+        baro__say("Assertion failed! Caught SIGABRT\n");
         baro__assert_failed(BARO__ASSERT_REQUIRE, 0);
 
         run_test = 0;
@@ -1056,6 +1180,7 @@ static void baro__usage(const char *program, size_t total) {
            "  --jobs <count>       Concurrent isolated tests (default 1)\n"
            "  --timeout <seconds>  Isolated test deadline (s or ms suffix)\n"
            "  --isolate            Run each test in a fresh child process\n"
+           "  --capture-stderr     Show stderr only for failed tests\n"
            "  --ctest              Single-test adapter mode (CTest owns process)\n"
            "  --test-id <id>       Select one test from this executable inventory\n"
            "  --list-tests-json    Print versioned JSON inventory\n"
@@ -1075,6 +1200,7 @@ int baro_run(
     int show_passed_tests = 0;
     int suppress_stdout = 1;
     int suppress_stderr = 0;
+    int capture_stderr = 0;
     int stop_after_failure = 0;
     int recover_abort = 0;
     size_t num_partitions = 1;
@@ -1126,6 +1252,7 @@ int baro_run(
                 continue;
             }
             if (!strcmp(option, "--isolate")) { isolate = 1; continue; }
+            if (!strcmp(option, "--capture-stderr")) { capture_stderr = 1; continue; }
             if (!strcmp(option, "--baro-child") || !strcmp(option, "--baro-result")) {
                 if (!baro__value(&arg, argc, argv)) return EXIT_FAILURE;
                 if (!strcmp(option, "--baro-child")) { child_id = baro__positive(argv[arg]); if (!child_id) return EXIT_FAILURE; }
@@ -1198,6 +1325,7 @@ int baro_run(
     }
 
     if (ctest_mode) suppress_stdout = 0; /* CTest captures this process output. */
+    if (ctest_mode || child_id || suppress_stderr) capture_stderr = 0;
     if (ctest_mode && (!test_id || isolate || recover_abort || child_id || child_result ||
         exact_name || raw_tag_filters || list_tests || junit_path || jobs != 1 || timeout > 0 ||
         cur_partition != 1 || num_partitions != 1)) {
@@ -1311,7 +1439,9 @@ int baro_run(
 
     baro__c.compiler_diagnostics = compiler_diagnostics;
     baro__c.suppress_stdout = suppress_stdout;
-    if (!isolate) baro__redirect_output(&baro__c, suppress_stdout);
+    baro__c.capture_stderr = capture_stderr && !isolate;
+    baro__detail.enabled = junit_path && !isolate && !child_id;
+    if (!isolate) baro__redirect_output(&baro__c, 1);
     if (suppress_stderr && !isolate) {
         baro__disable_output(&baro__c, stderr);
     }
@@ -1334,7 +1464,7 @@ int baro_run(
                     if (baro__process_start(&slot->process, exe, slot->id, compiler_diagnostics)) {
                         slot->active = 1; active++;
                     } else {
-                        results[slot->index] = (struct baro__result){1, 1, 0, 0, "Could not launch test", 0};
+                        results[slot->index] = (struct baro__result){1, 1, 0, 0, "Could not launch test", 0, NULL};
                         baro__c.num_tests_ran++; baro__c.num_tests_failed++;
                         fprintf(stderr, "Failed to launch: %s\n", tests.tests[slot->index].tag->desc);
                         if (stop_after_failure) stopped = 1;
@@ -1353,7 +1483,10 @@ int baro_run(
                     }
                 }
                 if (!suppress_stdout || results[i].failed) baro__process_output(slot->process.out, stdout, suppress_stdout);
-                if (!suppress_stderr) baro__process_output(slot->process.err, stderr, 0);
+                if (!suppress_stderr && (!capture_stderr || results[i].failed))
+                    baro__process_output(slot->process.err, stderr, 0);
+                if (junit_path && results[i].failed)
+                    results[i].detail = baro__process_detail(slot->process.out, slot->process.err);
                 baro__process_dispose(&slot->process);
                 slot->active = 0; active--; idle = 0;
                 baro__c.num_tests_ran++;
@@ -1377,6 +1510,7 @@ int baro_run(
             size_t const before_failed = baro__c.num_asserts_failed;
             if (ctest_mode && test->expect_abort) signal(SIGABRT, baro__ctest_abort);
             double const started = baro__monotonic();
+            baro__detail.size = 0;
             baro__run_one(test, recover_abort);
             results[i].seconds = baro__monotonic() - started;
             if (ctest_mode && test->expect_abort) {
@@ -1384,11 +1518,15 @@ int baro_run(
                 baro__c.current_test_failed = 1;
                 baro__failure_pending = 1;
                 baro__redirect_output(&baro__c, 0);
-                printf("Expected SIGABRT was not raised\n");
+                baro__say("Expected SIGABRT was not raised\n");
                 baro__report_location(test->tag->file_path, test->tag->line_num);
             }
             results[i].ran = 1;
             results[i].failed = baro__c.current_test_failed;
+            if (results[i].failed && baro__detail.size) {
+                results[i].detail = malloc(baro__detail.size + 1);
+                if (results[i].detail) memcpy(results[i].detail, baro__detail.text, baro__detail.size + 1);
+            }
             results[i].asserts = baro__c.num_asserts - before_asserts;
             results[i].asserts_failed = baro__c.num_asserts_failed - before_failed;
             baro__c.num_tests_ran++;
@@ -1402,13 +1540,13 @@ int baro_run(
 
                 printf("Passed: %s (%s:%d)\n" BARO__SEPARATOR,
                        test->tag->desc, baro__file_name(test->tag->file_path), test->tag->line_num);
-                baro__redirect_output(&baro__c, suppress_stdout);
+                baro__redirect_output(&baro__c, 1);
             }
 
             // Discard successful output and start the next test with empty capture.
             baro__redirect_output(&baro__c, 0);
-            baro__c.stdout_size = 0;
-            baro__redirect_output(&baro__c, suppress_stdout);
+            baro__c.out.size = baro__c.err.size = 0;
+            baro__redirect_output(&baro__c, 1);
         }
 
     }
@@ -1437,6 +1575,7 @@ int baro_run(
            baro__c.num_asserts_failed);
 
     int report_ok = !junit_path || baro__junit(junit_path, &tests, results);
+    for (size_t i = 0; i < num_tests; i++) free(results[i].detail);
     free(results);
     if (tests.tests != baro__c.tests.tests) free(tests.tests);
     if (ctest_mode && !baro__c.num_tests_failed && report_ok)
@@ -1477,7 +1616,7 @@ static void baro__typed_failure(int hard, const char *file, int line, const char
     baro__c.current_test_failed = 1;
     baro__c.num_asserts_failed++;
     baro__redirect_output(&baro__c, 0);
-    printf("%s failed: %s\n", hard ? "Require" : "Check", values);
+    baro__say("%s failed: %s\n", hard ? "Require" : "Check", values);
     baro__report_location(file, line);
     baro__assert_failed(hard ? BARO__ASSERT_REQUIRE : BARO__ASSERT_CHECK, 1);
 }
@@ -1496,10 +1635,10 @@ static void baro__values_failed(enum baro__assert_cond cond, const char *lhs_str
     baro__c.num_asserts_failed++;
     baro__redirect_output(&baro__c, 0);
     const char *op = baro__operator(cond);
-    printf("%s failed:%s%s\n",
+    baro__say("%s failed:%s%s\n",
            type == BARO__ASSERT_REQUIRE ? "Require" : "Check", *desc ? " " : "", desc);
-    printf("    %s %s %s\n", lhs_str, op, rhs_str);
-    if (lhs_value) printf("==> %s %s %s\n", lhs_value, op, rhs_value);
+    baro__say("    %s %s %s\n", lhs_str, op, rhs_str);
+    if (lhs_value) baro__say("==> %s %s %s\n", lhs_value, op, rhs_value);
     baro__report_location(file, line);
     baro__assert_failed(type, 1);
 }

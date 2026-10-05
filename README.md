@@ -120,13 +120,14 @@ code that may abort. Ordinary Baro requirements do not raise a signal.
 - `-a`: report passing tests.
 - `-o`: show all stdout, including passing tests.
 - `-e`: suppress stderr.
+- `--capture-stderr`: hold stderr like stdout and show it only with a failure.
 - `-s`: stop after the first failed test.
 - `-t foo,bar`: select descriptions containing `[foo]` or `[bar]`.
 - `--test "exact description"`: select by exact description (combined with tags).
 - `--list-tests`: list selected tests without running them.
 - `--allow-empty`: explicitly allow a selection matching no tests.
-- `--junit path.xml`: write JUnit results, including each test's duration, as
-  well as console output.
+- `--junit path.xml`: write JUnit results as well as console output. Each test
+  has its duration, and each failed test the diagnostics shown for it.
 - `-h`, `--help`: help.
 
 Exit status is zero on success and nonzero on test, argument, or report-writing
@@ -137,6 +138,11 @@ By default stdout is captured in a temporary file. Each failure shows the final
 4096 bytes since the preceding failure in that test, including explicit flushes.
 Passing output is discarded. Disk usage grows until capture is reset at a
 failure or test boundary; `-o` disables in-process capture.
+
+Stderr is not captured unless `--capture-stderr` is given, so by default it
+appears as it is written, ahead of the failure it belongs to. Captured output
+is lost if the process crashes before the failure is reported, which is why
+this is opt-in; prefer isolation for code that may crash.
 
 `-n index -p count` selects one contiguous partition (both values are 1-based).
 Partitions differ by at most one test; earlier partitions get any extra tests.
@@ -178,7 +184,8 @@ termination is still a failure but expected-abort recognition may be unavailable
 
 Isolation uses private temporary result files and captured output files. `-o`
 shows all captured stdout; otherwise failed children show a final 4096-byte tail.
-Stderr is shown unless `-e` is set. Output is presented after child completion,
+Stderr is shown unless `-e` is set, or with `--capture-stderr` only for failed
+tests. Output is presented after child completion,
 not streamed live. Temporary disk space must accommodate output until completion.
 
 ## Tooling

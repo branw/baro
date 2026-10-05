@@ -216,6 +216,17 @@ TEST("[subtest_loop] subtest inside a loop") {
     }
 }
 
+TEST("[stderr_capture] passing test") { fprintf(stderr, "STDERR_OF_PASS\n"); CHECK(1); }
+TEST("[stderr_capture] failing test") {
+    fprintf(stderr, "STDERR_OF_FAILURE\n");
+    puts("STDOUT_OF_FAILURE");
+    CHECK(0);
+}
+TEST("[report_bytes] output that XML cannot carry") {
+    puts("BAD\xff" "BYTE\x01" "END <&> caf\xc3\xa9");
+    CHECK(0);
+}
+
 static int isolated_state;
 TEST("[isolated_state] first") { CHECK_EQ(++isolated_state, 1); }
 TEST("[isolated_state] second") { CHECK_EQ(++isolated_state, 1); }

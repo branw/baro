@@ -230,8 +230,27 @@ static void baro__process_output(FILE *file, FILE *dest, int tail) {
     while ((n = fread(buf, 1, sizeof(buf), file)) != 0) fwrite(buf, 1, n, dest);
 }
 
+/* The end of a failed child's output, as one string for the JUnit report. */
+static char *baro__process_detail(FILE *out, FILE *err) {
+    enum { LIMIT = 64 * 1024 };
+    static const char heading[] = "Captured stderr:\n";
+    char *text = malloc(2 * LIMIT + sizeof(heading));
+    if (!text) return NULL;
+    size_t used = 0;
+    FILE *files[] = {out, err};
+    for (int i = 0; i < 2; i++) {
+        if (fflush(files[i]) || fseek(files[i], 0, SEEK_END)) continue;
+        long size = ftell(files[i]);
+        if (size <= 0 || fseek(files[i], size > LIMIT ? size - LIMIT : 0, SEEK_SET)) continue;
+        if (i == 1) { memcpy(text + used, heading, sizeof(heading) - 1); used += sizeof(heading) - 1; }
+        used += fread(text + used, 1, LIMIT, files[i]);
+    }
+    text[used] = 0;
+    return text;
+}
+
 static struct baro__result baro__process_result(struct baro__process *p, size_t id) {
-    struct baro__result result = {1, 1, 0, 0, "Abnormal termination", 0};
+    struct baro__result result = {1, 1, 0, 0, "Abnormal termination", 0, NULL};
     if (p->timed_out) { result.reason = "Timeout"; return result; }
 #ifndef _WIN32
     /* A negative status is the signal that ended the child. */
