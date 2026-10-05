@@ -146,6 +146,8 @@ this is opt-in; prefer isolation for code that may crash.
 
 `-n index -p count` selects one contiguous partition (both values are 1-based).
 Partitions differ by at most one test; earlier partitions get any extra tests.
+With more partitions than selected tests, the later partitions are empty and
+succeed.
 This supports external CI sharding and does not create processes by itself.
 
 ## Isolated execution

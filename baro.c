@@ -1385,19 +1385,15 @@ int baro_run(
         return EXIT_FAILURE;
     }
     size_t const num_tests = tests.size;
-    if (num_tests > 0 && (num_partitions < 1 || num_partitions > num_tests)) {
-        fprintf(stderr, "Invalid number of partitions %zu, value should be"
-                        " between 1 and %zu\n", num_partitions, num_tests);
-        return EXIT_FAILURE;
-    }
-
     if (cur_partition < 1 || cur_partition > num_partitions) {
         fprintf(stderr, "Invalid current partition %zu, value should be between 1"
                         " and %zu inclusive\n", cur_partition, num_partitions);
         return EXIT_FAILURE;
     }
 
-    // Partition the tests if we are in a multiprocess workflow
+    // Partition the tests if we are in a multiprocess workflow. With more
+    // partitions than tests the later ones are empty, which is not an error: a
+    // fixed set of CI shards must keep working when a filter leaves few tests.
     size_t const partition_size = num_tests / num_partitions;
     size_t const remainder = num_tests % num_partitions;
     size_t const partition_index = cur_partition - 1;
@@ -1430,8 +1426,10 @@ int baro_run(
     if (!child_id) {
     printf("Running %zu out of %zu test%s (of %zu total)\n", num_tests_to_run, num_tests,
            num_tests > 1 ? "s" : "", total_num_tests);
-    if (num_partitions > 1) {
+    if (num_partitions > 1 && num_tests_to_run) {
         printf("(Partition %zu: tests %zu through %zu)\n", cur_partition, first_test + 1, last_test);
+    } else if (num_partitions > 1) {
+        printf("(Partition %zu is empty)\n", cur_partition);
     }
 
     printf(BARO__SEPARATOR);
