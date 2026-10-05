@@ -8,15 +8,18 @@ if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     set(baro_top_level ON)
 endif()
 option(BARO_BUILD_TESTS "Build Baro's own tests" ${baro_top_level})
+option(BARO_INSTALL "Generate install rules for Baro" ${baro_top_level})
+option(BARO_WARNINGS_AS_ERRORS "Treat GCC/Clang warnings in Baro's runtime as errors" ${baro_top_level})
 option(BARO_COVERAGE "Build developer coverage instrumentation and reports" OFF)
 option(BARO_SANITIZERS "Instrument Baro and its consumers with sanitizers" OFF)
 
+include(GNUInstallDirs)
 add_library(baro STATIC baro.c)
 add_library(baro::baro ALIAS baro)
 target_compile_definitions(baro PUBLIC BARO_ENABLE)
 target_include_directories(baro PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-    $<INSTALL_INTERFACE:include>)
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 if(NOT WIN32)
     target_link_libraries(baro PUBLIC m)
 endif()
@@ -27,7 +30,11 @@ target_link_libraries(baro_main PUBLIC baro)
 if(MSVC)
     target_compile_options(baro PRIVATE /W4)
 else()
-    target_compile_options(baro PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(baro PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+# A consumer's newer compiler must not fail on a warning Baro has not seen yet.
+if(BARO_WARNINGS_AS_ERRORS AND NOT MSVC)
+    target_compile_options(baro PRIVATE -Werror)
 endif()
 if(BARO_SANITIZERS)
     if(MSVC)
@@ -52,14 +59,19 @@ if(BARO_COVERAGE)
     target_link_options(baro_ctest PRIVATE --coverage)
 endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Baro.cmake")
-include(GNUInstallDirs)
-install(TARGETS baro baro_main baro_ctest EXPORT baroTargets
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES baro.h DESTINATION include)
-install(FILES cmake/Baro.cmake cmake/BaroDiscoverTests.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/baro)
-install(EXPORT baroTargets NAMESPACE baro:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/baro)
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/baroConfig.cmake" "include(\"\${CMAKE_CURRENT_LIST_DIR}/baroTargets.cmake\")\ninclude(\"\${CMAKE_CURRENT_LIST_DIR}/Baro.cmake\")\n")
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/baroConfig.cmake" DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/baro)
+if(BARO_INSTALL)
+    include(CMakePackageConfigHelpers)
+    install(TARGETS baro baro_main baro_ctest EXPORT baroTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(FILES baro.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    install(FILES cmake/Baro.cmake cmake/BaroDiscoverTests.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/baro)
+    install(EXPORT baroTargets NAMESPACE baro:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/baro)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/baroConfig.cmake" "include(\"\${CMAKE_CURRENT_LIST_DIR}/baroTargets.cmake\")\ninclude(\"\${CMAKE_CURRENT_LIST_DIR}/Baro.cmake\")\n")
+    write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/baroConfigVersion.cmake"
+        VERSION ${PROJECT_VERSION} COMPATIBILITY SameMinorVersion)
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/baroConfig.cmake" "${CMAKE_CURRENT_BINARY_DIR}/baroConfigVersion.cmake"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/baro)
+endif()
 
 if(NOT BARO_BUILD_TESTS)
     return()
@@ -145,11 +157,15 @@ foreach(partition RANGE 1 6)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_regression.cmake")
 endforeach()
 
-add_test(NAME consumer_integration COMMAND ${CMAKE_COMMAND}
-    "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}"
-    "-DBUILD=${CMAKE_CURRENT_BINARY_DIR}"
-    "-DCONFIG=$<CONFIG>"
-    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer.cmake")
+# This test installs Baro, so it needs the install rules.
+if(BARO_INSTALL)
+    add_test(NAME consumer_integration COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DBUILD=${CMAKE_CURRENT_BINARY_DIR}"
+        "-DCONFIG=$<CONFIG>"
+        "-DVERSION=${PROJECT_VERSION}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer.cmake")
+endif()
 
 add_executable(example_readme examples/readme.c)
 target_link_libraries(example_readme PRIVATE baro::main)

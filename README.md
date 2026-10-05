@@ -45,7 +45,8 @@ Installed packages support `find_package(baro CONFIG REQUIRED)`. `baro::main`
 provides the default entry point; `baro::baro` provides the runtime only.
 Both propagate `BARO_ENABLE`. Production targets should not link these targets
 or define `BARO_ENABLE`; test bodies then remain unregistered and can be removed
-by optimization. `BARO_BUILD_TESTS` defaults off when consumed as a subdirectory.
+by optimization. `BARO_BUILD_TESTS`, `BARO_INSTALL`, and `BARO_WARNINGS_AS_ERRORS`
+default off when consumed as a subdirectory.
 `BARO_SANITIZERS` is opt-in and instruments the runtime and linked consumers.
 
 Custom runners call `baro_run(argc, argv)` once. Dispatch
