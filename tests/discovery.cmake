@@ -135,8 +135,10 @@ foreach(config IN LISTS configs)
     string(JSON adapter GET "${inventory}" tests 0 command 0)
     string(JSON executable GET "${inventory}" tests 0 command 1)
     execute_process(
-        COMMAND "${CMAKE_COMMAND}" -E env "BARO_VALUE=alpha;beta" "${adapter}" "${executable}" --test-id 1 --ctest
-        COMMAND "${CMAKE_COMMAND}" -E env "BARO_VALUE=alpha;beta" "${adapter}" "${executable}" --test-id 1 --ctest
+        COMMAND "${CMAKE_COMMAND}" -E env "BARO_VALUE=alpha;beta" "${CMAKE_COMMAND}" "-DADAPTER=${adapter}"
+            "-DEXECUTABLE=${executable}" -P "${CMAKE_CURRENT_LIST_DIR}/adapter_once.cmake"
+        COMMAND "${CMAKE_COMMAND}" -E env "BARO_VALUE=alpha;beta" "${CMAKE_COMMAND}" "-DADAPTER=${adapter}"
+            "-DEXECUTABLE=${executable}" -P "${CMAKE_CURRENT_LIST_DIR}/adapter_once.cmake"
         WORKING_DIRECTORY "${binary}/working directory" RESULTS_VARIABLE statuses OUTPUT_QUIET ERROR_VARIABLE adapter_errors)
     if(NOT statuses STREQUAL "0;0")
         message(FATAL_ERROR "Concurrent adapters failed: ${statuses}: ${adapter_errors}")
