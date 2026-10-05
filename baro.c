@@ -191,6 +191,7 @@ static void baro__run_one(const struct baro__test *test, int recover_abort) {
     baro__c.current_test = test;
     baro__c.current_test_failed = 0;
     baro__failure_pending = 0;
+    baro__c.run++;
     baro__hash_set_clear(&baro__c.passed_subtests);
 
     int run_test = 1;
@@ -223,6 +224,7 @@ static void baro__run_one(const struct baro__test *test, int recover_abort) {
         baro__c.should_reenter_subtest = 0;
         baro__c.subtest_max_size = 0;
         baro__tag_list_clear(&baro__c.subtest_stack);
+        baro__c.subtest_hash = 0;
         baro__c.escaped_subtest = NULL;
 
         test->func();

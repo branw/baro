@@ -33,6 +33,14 @@ struct baro__tag {
     int line_num;
 };
 
+// One SUBTEST statement. It remembers the parent path under which all of its
+// leaves last finished, so later traversals skip it without a set lookup.
+struct baro__subtest {
+    struct baro__tag tag;
+    uint64_t done_parent;
+    size_t done_run;
+};
+
 struct baro__tag_list {
     struct baro__tag const **tags;
     size_t size;
@@ -91,31 +99,39 @@ static inline int baro__tag_list_pop(
     return 1;
 }
 
+// Use the address of each item in the list as build a hash, as we only
+// expect tags to be statically allocated. The C99 standard guarantees that
+// two named objects of the same type will not have the same memory
+// location (6.5.9/6):
+//
+// > Two pointers compare equal if and only if both are null pointers,
+// > both are pointers to the same object (including a pointer to an object
+// > and a subobject at its beginning) or function, both are pointers to
+// > one past the last element of the same array object, or one is a pointer
+// > to one past the end of one array object and the other is a pointer to
+// > the start of a different array object that happens to immediately
+// > follow the first array object in the address space.
+static inline uint64_t baro__tag_hash(
+        struct baro__tag const * const tag,
+        size_t const index) {
+    // Adapted from MurmurHash3's avalanche mixer
+    uint64_t a = (uint64_t) tag + index;
+    a ^= a >> 33u;
+    a *= 0xff51afd7ed558ccdL;
+    a ^= a >> 33u;
+    a *= 0xc4ceb9fe1a85ec53L;
+    a ^= a >> 33u;
+    return a;
+}
+
+// The items are combined with XOR, so the hash of a list can also be kept up
+// to date as items are pushed and popped.
 static inline uint64_t baro__tag_list_hash(
         struct baro__tag_list * const list) {
     uint64_t hash = 0;
 
-    // Use the address of each item in the list as build a hash, as we only
-    // expect tags to be statically allocated. The C99 standard guarantees that
-    // two named objects of the same type will not have the same memory
-    // location (6.5.9/6):
-    //
-    // > Two pointers compare equal if and only if both are null pointers,
-    // > both are pointers to the same object (including a pointer to an object
-    // > and a subobject at its beginning) or function, both are pointers to
-    // > one past the last element of the same array object, or one is a pointer
-    // > to one past the end of one array object and the other is a pointer to
-    // > the start of a different array object that happens to immediately
-    // > follow the first array object in the address space.
     for (size_t i = 0; i < list->size; i++) {
-        // Adapted from MurmurHash3's avalanche mixer
-        uint64_t a = (uint64_t) list->tags[i] + i;
-        a ^= a >> 33u;
-        a *= 0xff51afd7ed558ccdL;
-        a ^= a >> 33u;
-        a *= 0xc4ceb9fe1a85ec53L;
-        a ^= a >> 33u;
-        hash ^= a;
+        hash ^= baro__tag_hash(list->tags[i], i);
     }
 
     return hash;
@@ -298,6 +314,10 @@ struct baro__context {
     // A stack that updates as we enter and exit subtests. This is mainly
     // used to build "stack traces" for assertion failures.
     struct baro__tag_list subtest_stack;
+    // Hash of subtest_stack, maintained incrementally.
+    uint64_t subtest_hash;
+    // Number of the top-level test being run, for baro__subtest::done_run.
+    size_t run;
     // A set of all visited subtests in the current test, stored as 64-bit
     // hashes of the terminating subtest stacks.
     struct baro__hash_set passed_subtests;
@@ -334,6 +354,8 @@ static inline void baro__context_create(
     context->num_asserts = context->num_asserts_failed = 0;
 
     baro__tag_list_create(&context->subtest_stack, 8);
+    context->subtest_hash = 0;
+    context->run = 0;
     baro__hash_set_create(&context->passed_subtests);
     context->subtest_max_size = 0;
     context->should_reenter_subtest = 0;
@@ -485,15 +507,15 @@ static inline void baro__register_test(void (*func)(void), const struct baro__ta
 void baro__subtest_error(struct baro__tag const *tag, char const *message);
 
 static inline int baro__check_subtest(
-        struct baro__tag const * const tag) {
-    size_t const depth = baro__tag_list_size(&baro__c.subtest_stack);
+        struct baro__subtest * const site) {
+    size_t const depth = baro__c.subtest_stack.size;
     if (depth < baro__c.subtest_max_size) {
         // A traversal enters one subtest per depth, and its slot is not reused
         // until the next traversal. Meeting that subtest again (from a loop or
         // a repeated helper call) means every later visit is silently skipped.
-        if (baro__c.subtest_stack.tags[depth] == tag) {
-            baro__subtest_error(tag, "subtest reached more than once in a traversal; "
-                                     "later visits do not run");
+        if (baro__c.subtest_stack.tags[depth] == &site->tag) {
+            baro__subtest_error(&site->tag, "subtest reached more than once in a traversal; "
+                                            "later visits do not run");
             return 0;
         }
 
@@ -501,35 +523,54 @@ static inline int baro__check_subtest(
         return 0;
     }
 
-    baro__tag_list_push(&baro__c.subtest_stack, tag);
-    if (baro__hash_set_contains(&baro__c.passed_subtests,
-                                baro__tag_list_hash(&baro__c.subtest_stack))) {
-        baro__tag_list_pop(&baro__c.subtest_stack, NULL);
+    // Every traversal passes all earlier siblings again, so the common case of
+    // a subtest that already finished under this parent must stay cheap.
+    if (site->done_run == baro__c.run && site->done_parent == baro__c.subtest_hash) {
         return 0;
     }
 
+    // The same statement can also finish under several parents (a helper
+    // called from different subtests); the set remembers all of them.
+    uint64_t const hash = baro__c.subtest_hash ^ baro__tag_hash(&site->tag, depth);
+    if (baro__hash_set_contains(&baro__c.passed_subtests, hash)) {
+        return 0;
+    }
+
+    baro__tag_list_push(&baro__c.subtest_stack, &site->tag);
+    baro__c.subtest_hash = hash;
     baro__c.subtest_max_size = baro__c.subtest_stack.size;
     baro__c.subtest_entered = 1;
     return 1;
 }
 
+static inline void baro__pop_subtest(void) {
+    struct baro__tag_list * const stack = &baro__c.subtest_stack;
+    if (stack->size) {
+        stack->size--;
+        baro__c.subtest_hash ^= baro__tag_hash(stack->tags[stack->size], stack->size);
+    }
+}
+
 static inline void baro__exit_subtest(
-        struct baro__tag const * const tag) {
+        struct baro__subtest * const site) {
     if (baro__c.subtest_entered) {
         // Anything still above this subtest was left by break or goto.
         while (baro__c.subtest_stack.size > 1 &&
-               baro__c.subtest_stack.tags[baro__c.subtest_stack.size - 1] != tag) {
+               baro__c.subtest_stack.tags[baro__c.subtest_stack.size - 1] != &site->tag) {
             if (!baro__c.escaped_subtest) {
                 baro__c.escaped_subtest = baro__c.subtest_stack.tags[baro__c.subtest_stack.size - 1];
             }
-            baro__tag_list_pop(&baro__c.subtest_stack, NULL);
+            baro__pop_subtest();
         }
+
+        uint64_t const hash = baro__c.subtest_hash;
+        baro__pop_subtest();
 
         if (!baro__c.should_reenter_subtest) {
-            baro__hash_set_add(&baro__c.passed_subtests, baro__tag_list_hash(&baro__c.subtest_stack));
+            baro__hash_set_add(&baro__c.passed_subtests, hash);
+            site->done_run = baro__c.run;
+            site->done_parent = baro__c.subtest_hash;
         }
-
-        baro__tag_list_pop(&baro__c.subtest_stack, NULL);
     }
 }
 
@@ -920,12 +961,12 @@ do { (void)(lhs); (void)(rhs); (void)(element_size); (void)(element_count); (voi
 // should be executed (i.e. if we haven't exhausted all combinations including
 // it), while also updating the stack once we leave the subtest.
 #define BARO__SUBTEST_WRAPPER(desc, counter)                                                                                 \
-    static struct baro__tag const BARO__CONCAT(baro__subtest_tag_, counter) = {desc, __FILE__, __LINE__};                    \
-    int const BARO__CONCAT(baro__enter_subtest_, counter) = baro__check_subtest(&BARO__CONCAT(baro__subtest_tag_, counter)); \
+    static struct baro__subtest BARO__CONCAT(baro__subtest_site_, counter) = {{desc, __FILE__, __LINE__}, 0, 0};             \
+    int const BARO__CONCAT(baro__enter_subtest_, counter) = baro__check_subtest(&BARO__CONCAT(baro__subtest_site_, counter));\
     if (BARO__CONCAT(baro__enter_subtest_, counter)) goto BARO__CONCAT(baro__subtest_, counter);                             \
     while (BARO__CONCAT(baro__enter_subtest_, counter))                                                                      \
         if (1) {                                                                                                             \
-            baro__exit_subtest(&BARO__CONCAT(baro__subtest_tag_, counter));                                                  \
+            baro__exit_subtest(&BARO__CONCAT(baro__subtest_site_, counter));                                                 \
             break;                                                                                                           \
         } else                                                                                                               \
             BARO__CONCAT(baro__subtest_, counter) :
