@@ -141,22 +141,6 @@ failure or test boundary; `-o` disables in-process capture.
 Partitions differ by at most one test; earlier partitions get any extra tests.
 This supports external CI sharding and does not create processes by itself.
 
-## Development
-
-```sh
-cmake -S . -B build -DBARO_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
-
-The suite tests passing/failing behavior, diagnostics, cleanup, capture boundaries,
-CLI validation, JUnit escaping, and independent source/installed consumers.
-CI covers Debug/Release with GCC, Clang, AppleClang, and MSVC. Local validation
-in this development session has only run on macOS; CI results determine support
-on other platforms.
-
-MIT license; see [LICENSE](LICENSE).
-
 ## Isolated execution
 
 ```sh
@@ -205,3 +189,18 @@ not streamed live. Temporary disk space must accommodate output until completion
 Baro's core is the C runner and assertion macros. Process isolation and per-test
 CTest discovery are optional execution modes. Python and gcovr are needed only
 for developing Baro's coverage reports, not for building or using the framework.
+
+## Development
+
+```sh
+cmake -S . -B build -DBARO_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+The suite tests passing/failing behavior, diagnostics, cleanup, capture boundaries,
+CLI validation, JUnit escaping, and independent source/installed consumers.
+CI covers Debug/Release with GCC, Clang, AppleClang, and MSVC, and its results
+determine support on each platform.
+
+MIT license; see [LICENSE](LICENSE).

@@ -17,16 +17,6 @@ int baro_is_discovery(int argc, char *argv[]);
 #include <stdlib.h>
 #include <string.h>
 
-//#ifdef _WIN32
-#define BARO__RED ""
-#define BARO__GREEN ""
-#define BARO__UNSET_COLOR ""
-//#else
-//#define BARO__RED "\x1B[31m"
-//#define BARO__GREEN "\x1B[32m"
-//#define BARO__UNSET_COLOR "\x1B[0m"
-//#endif//_WIN32
-
 struct baro__tag {
     char const *desc;
     char const *file_path;
@@ -673,7 +663,7 @@ static inline void baro__assert1(
 
     char const * const assert_type = (type == BARO__ASSERT_REQUIRE ? "Require" : "Check");
     char const * const op = (expected_value == BARO__EXPECTING_TRUE ? " != 0" : " == 0");
-    printf(BARO__RED "%s failed:%s\n" BARO__UNSET_COLOR, assert_type, desc);
+    printf("%s failed:%s\n", assert_type, desc);
     printf("    %s%s\n", value_str, op);
     baro__report_location(file_path, line_num);
 
@@ -712,7 +702,7 @@ static inline void baro__assert2(
             cond == BARO__ASSERT_GE ? ">=" : "";
 
     char const * const assert_type = (type == BARO__ASSERT_REQUIRE ? "Require" : "Check");
-    printf(BARO__RED "%s failed:%s\n" BARO__UNSET_COLOR, assert_type, desc);
+    printf("%s failed:%s\n", assert_type, desc);
     printf("    %s %s %s\n", lhs_str, op, rhs_str);
     baro__report_location(file_path, line_num);
 
@@ -770,7 +760,7 @@ static inline void baro__assert_str(
         str_padding = expanded_len - str_len;
     }
 
-    printf(BARO__RED "%s%s failed:%s\n" BARO__UNSET_COLOR, assert_type, sensitivity, desc);
+    printf("%s%s failed:%s\n", assert_type, sensitivity, desc);
     printf("    %s %*s%s %s\n", lhs_str, (int)str_padding, "", op, rhs_str);
     printf("==> %s%s%s %*s%s %s%s%s\n", lhs_wrap, lhs, lhs_wrap, (int)expanded_padding, "", op, rhs_wrap, rhs, rhs_wrap);
     baro__report_location(file_path, line_num);
@@ -839,7 +829,7 @@ static inline void baro__assert_arr(
     *p = '\0';
     *q = '\0';
 
-    printf(BARO__RED "%s array failed:%s\n" BARO__UNSET_COLOR, assert_type, desc);
+    printf("%s array failed:%s\n", assert_type, desc);
     printf("    %s[%zu] %s %s[%zu]\n", lhs_str, element_index, op, rhs_str, element_index);
     printf("==> 0x%s %s 0x%s\n", lhs_val_str, op, rhs_val_str);
     baro__report_location(file_path, line_num);
@@ -901,11 +891,7 @@ do { (void)(lhs); (void)(rhs); (void)(desc); } while(0)
 #define baro__assert_arr(lhs, lhs_str, rhs, rhs_str, element_size, element_count, expected_value, type, desc, file_path, line_num) \
 do { (void)(lhs); (void)(rhs); (void)(element_size); (void)(element_count); (void)(desc); } while(0)
 #ifndef assert
-#ifdef __cplusplus
-#include <cassert>
-#else
 #include <assert.h>
-#endif//defined(__cplusplus)
 #endif//!defined(assert)
 #endif//BARO_ENABLE
 
@@ -1112,7 +1098,7 @@ baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, s
 
 #define BARO__CHECK_ARR_NE3(lhs, rhs, size) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
 baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_CHECK, "", __FILE__, __LINE__); } while (0)
-#define BARO__CHECK_ARR_NE4(lhs, rhs, size, desc) do { BARO__STATIC_ASSERT(sizeof(lhs[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
+#define BARO__CHECK_ARR_NE4(lhs, rhs, size, desc) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
 baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_CHECK, " " desc, __FILE__, __LINE__); } while (0)
 
 #define BARO__REQUIRE_ARR_NE3(lhs, rhs, size) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \

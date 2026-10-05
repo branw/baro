@@ -200,7 +200,7 @@ void baro__subtest_error(struct baro__tag const *tag, char const *message) {
 
     baro__redirect_output(&baro__c, 0);
 
-    printf(BARO__RED "Subtest error: %s\n" BARO__UNSET_COLOR, message);
+    printf("Subtest error: %s\n", message);
     printf("    %s\n", tag->desc);
     baro__report_location(tag->file_path, tag->line_num);
     baro__assert_failed(BARO__ASSERT_CHECK, 0);
@@ -227,7 +227,7 @@ static void baro__run_one(const struct baro__test *test, int recover_abort) {
 
         baro__redirect_output(&baro__c, 0);
 
-        printf(BARO__RED "Assertion failed! Caught SIGABRT\n" BARO__UNSET_COLOR);
+        printf("Assertion failed! Caught SIGABRT\n");
         baro__assert_failed(BARO__ASSERT_REQUIRE, 0);
 
         run_test = 0;
@@ -628,7 +628,7 @@ int baro_run(
             } else if (show_passed_tests) {
                 baro__redirect_output(&baro__c, 0);
 
-                printf(BARO__GREEN "Passed: %s (%s:%d)\n" BARO__UNSET_COLOR BARO__SEPARATOR,
+                printf("Passed: %s (%s:%d)\n" BARO__SEPARATOR,
                        test->tag->desc, baro__file_name(test->tag->file_path), test->tag->line_num);
                 baro__redirect_output(&baro__c, suppress_stdout);
             }
@@ -656,13 +656,11 @@ int baro_run(
         return !ok || baro__c.num_tests_failed ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 
-    printf("tests:   %5zu total | " BARO__GREEN "%5zu passed" BARO__UNSET_COLOR
-           " | " BARO__RED "%5zu failed" BARO__UNSET_COLOR "\n",
+    printf("tests:   %5zu total | %5zu passed | %5zu failed\n",
            baro__c.num_tests_ran, baro__c.num_tests_ran - baro__c.num_tests_failed,
            baro__c.num_tests_failed);
 
-    printf("asserts: %5zu total | " BARO__GREEN "%5zu passed" BARO__UNSET_COLOR
-           " | " BARO__RED "%5zu failed" BARO__UNSET_COLOR "\n",
+    printf("asserts: %5zu total | %5zu passed | %5zu failed\n",
            baro__c.num_asserts, baro__c.num_asserts - baro__c.num_asserts_failed,
            baro__c.num_asserts_failed);
 
@@ -726,7 +724,7 @@ static void baro__values_failed(enum baro__assert_cond cond, const char *lhs_str
     baro__c.num_asserts_failed++;
     baro__redirect_output(&baro__c, 0);
     const char *op = baro__operator(cond);
-    printf(BARO__RED "%s failed:%s\n" BARO__UNSET_COLOR,
+    printf("%s failed:%s\n",
            type == BARO__ASSERT_REQUIRE ? "Require" : "Check", desc);
     printf("    %s %s %s\n", lhs_str, op, rhs_str);
     if (lhs_value) printf("==> %s %s %s\n", lhs_value, op, rhs_value);
