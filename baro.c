@@ -602,7 +602,7 @@ void baro__assert1(
 
     char const * const assert_type = (type == BARO__ASSERT_REQUIRE ? "Require" : "Check");
     char const * const op = (expected_value == BARO__EXPECTING_TRUE ? " != 0" : " == 0");
-    printf("%s failed:%s\n", assert_type, desc);
+    printf("%s failed:%s%s\n", assert_type, *desc ? " " : "", desc);
     printf("    %s%s\n", value_str, op);
     baro__report_location(file_path, line_num);
 
@@ -641,7 +641,7 @@ void baro__assert2(
             cond == BARO__ASSERT_GE ? ">=" : "";
 
     char const * const assert_type = (type == BARO__ASSERT_REQUIRE ? "Require" : "Check");
-    printf("%s failed:%s\n", assert_type, desc);
+    printf("%s failed:%s%s\n", assert_type, *desc ? " " : "", desc);
     printf("    %s %s %s\n", lhs_str, op, rhs_str);
     baro__report_location(file_path, line_num);
 
@@ -699,7 +699,7 @@ void baro__assert_str(
         str_padding = expanded_len - str_len;
     }
 
-    printf("%s%s failed:%s\n", assert_type, sensitivity, desc);
+    printf("%s%s failed:%s%s\n", assert_type, sensitivity, *desc ? " " : "", desc);
     printf("    %s %*s%s %s\n", lhs_str, (int)str_padding, "", op, rhs_str);
     printf("==> %s%s%s %*s%s %s%s%s\n", lhs_wrap, lhs, lhs_wrap, (int)expanded_padding, "", op, rhs_wrap, rhs, rhs_wrap);
     baro__report_location(file_path, line_num);
@@ -768,7 +768,7 @@ void baro__assert_arr(
     *p = '\0';
     *q = '\0';
 
-    printf("%s array failed:%s\n", assert_type, desc);
+    printf("%s array failed:%s%s\n", assert_type, *desc ? " " : "", desc);
     printf("    %s[%zu] %s %s[%zu]\n", lhs_str, element_index, op, rhs_str, element_index);
     printf("==> 0x%s %s 0x%s\n", lhs_val_str, op, rhs_val_str);
     baro__report_location(file_path, line_num);
@@ -1496,8 +1496,8 @@ static void baro__values_failed(enum baro__assert_cond cond, const char *lhs_str
     baro__c.num_asserts_failed++;
     baro__redirect_output(&baro__c, 0);
     const char *op = baro__operator(cond);
-    printf("%s failed:%s\n",
-           type == BARO__ASSERT_REQUIRE ? "Require" : "Check", desc);
+    printf("%s failed:%s%s\n",
+           type == BARO__ASSERT_REQUIRE ? "Require" : "Check", *desc ? " " : "", desc);
     printf("    %s %s %s\n", lhs_str, op, rhs_str);
     if (lhs_value) printf("==> %s %s %s\n", lhs_value, op, rhs_value);
     baro__report_location(file, line);

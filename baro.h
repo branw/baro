@@ -113,14 +113,6 @@ void baro__near(double lhs, double rhs, double absolute, double relative,
 static inline void baro_defer(void (*callback)(void *), const void *data, size_t size) {
     (void)callback; (void)data; (void)size;
 }
-#define baro__assert1(value, value_str, expected_value, type, desc, file_path, line_num) \
-do { (void)(value); (void)(desc); } while(0)
-#define baro__assert2(cond, passed, lhs_str, rhs_str, type, desc, file_path, line_num) \
-do { (void)(passed); (void)(desc); } while(0)
-#define baro__assert_str(lhs, lhs_str, rhs, rhs_str, expected_value, case_sensitivity, type, desc, file_path, line_num) \
-do { (void)(lhs); (void)(rhs); (void)(desc); } while(0)
-#define baro__assert_arr(lhs, lhs_str, rhs, rhs_str, element_size, element_count, expected_value, type, desc, file_path, line_num) \
-do { (void)(lhs); (void)(rhs); (void)(element_size); (void)(element_count); (void)(desc); } while(0)
 #ifndef assert
 #include <assert.h>
 #endif//!defined(assert)
@@ -199,17 +191,35 @@ do { (void)(lhs); (void)(rhs); (void)(element_size); (void)(element_count); (voi
 
 #define BARO_SUBTEST(desc) BARO__SUBTEST_WRAPPER(desc, __COUNTER__)
 
-#define BARO__CHECK1(cond) baro__assert1(((cond) != 0), #cond, BARO__EXPECTING_TRUE, BARO__ASSERT_CHECK, "", __FILE__, __LINE__)
-#define BARO__CHECK2(cond, desc) baro__assert1(((cond) != 0), #cond, BARO__EXPECTING_TRUE, BARO__ASSERT_CHECK, " " desc, __FILE__, __LINE__)
+// Assertions take an optional trailing description, which must be a string
+// literal. Each public macro appends two placeholders to its arguments, so the
+// family macro it forwards to always finds a description, and the argument
+// after that is a placeholder unless too many arguments were given. BARO__EXPAND
+// makes MSVC's traditional preprocessor split the forwarded arguments.
+#define BARO__EXPAND(x) x
+#define BARO__OMITTED ""
+#define BARO__END_BARO__OMITTED
 
-#define BARO__REQUIRE1(cond) baro__assert1(((cond) != 0), #cond, BARO__EXPECTING_TRUE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE2(cond, desc) baro__assert1(((cond) != 0), #cond, BARO__EXPECTING_TRUE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
-
-#define BARO__CHECK_FALSE1(cond) baro__assert1(((cond) != 0), #cond, BARO__EXPECTING_FALSE, 0, "", __FILE__, __LINE__)
-#define BARO__CHECK_FALSE2(cond, desc) baro__assert1(((cond) != 0), #cond, BARO__EXPECTING_FALSE, 0, " " desc, __FILE__, __LINE__)
-
-#define BARO__REQUIRE_FALSE1(cond) baro__assert1(((cond) != 0), #cond, BARO__EXPECTING_FALSE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE_FALSE2(cond, desc) baro__assert1(((cond) != 0), #cond, BARO__EXPECTING_FALSE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
+#ifdef BARO_ENABLE
+#define BARO__TRUTH(expected, type, cond, desc, end, ...)                                           \
+    baro__assert1(((cond) != 0), #cond, expected, type, "" desc, __FILE__, __LINE__) BARO__END_##end
+#define BARO__STRING(expected, sensitivity, type, lhs, rhs, desc, end, ...)                         \
+    baro__assert_str(lhs, #lhs, rhs, #rhs, expected, sensitivity, type, "" desc,                    \
+                     __FILE__, __LINE__) BARO__END_##end
+#define BARO__ARRAY(expected, type, lhs, rhs, count, desc, end, ...) do {                           \
+    BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types");            \
+    baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs,                  \
+                     sizeof((lhs)[0]), count, expected, type, "" desc, __FILE__, __LINE__);         \
+} while (0) BARO__END_##end
+#else
+#define BARO__TRUTH(expected, type, cond, desc, end, ...)                                           \
+    do { (void)(cond); (void)("" desc); } while (0) BARO__END_##end
+#define BARO__STRING(expected, sensitivity, type, lhs, rhs, desc, end, ...)                         \
+    do { (void)(lhs); (void)(rhs); (void)("" desc); } while (0) BARO__END_##end
+#define BARO__ARRAY(expected, type, lhs, rhs, count, desc, end, ...)                                \
+    do { (void)(lhs); (void)(rhs); (void)sizeof((lhs)[0]); (void)(count); (void)("" desc); }        \
+    while (0) BARO__END_##end
+#endif//BARO_ENABLE
 
 // Generic comparisons also display both values when the compiler can capture
 // each operand once and select a formatter by type (C11 _Generic). Both
@@ -236,7 +246,10 @@ do { (void)(lhs); (void)(rhs); (void)(element_size); (void)(element_count); (voi
 #endif
 #endif
 
-#ifdef BARO__CAPTURE_LHS
+#if !defined(BARO_ENABLE)
+#define BARO__COMPARE(cond, op, type, lhs, rhs, desc, end, ...)                                     \
+    do { (void)((lhs) op (rhs)); (void)("" desc); } while (0) BARO__END_##end
+#elif defined(BARO__CAPTURE_LHS)
 // Operands are promoted before they are compared, so narrower types never occur.
 #define BARO__VALUE_KIND(x) _Generic((x),                                             \
     int: BARO__VALUE_INT, unsigned: BARO__VALUE_UINT,                                 \
@@ -244,222 +257,75 @@ do { (void)(lhs); (void)(rhs); (void)(element_size); (void)(element_count); (voi
     long long: BARO__VALUE_LLONG, unsigned long long: BARO__VALUE_ULLONG,             \
     float: BARO__VALUE_FLOAT, double: BARO__VALUE_DOUBLE,                             \
     long double: BARO__VALUE_LDOUBLE, default: BARO__VALUE_OTHER)
-#define BARO__COMPARE(cond, op, lhs, lhs_str, rhs, rhs_str, type, desc) do {          \
-    BARO__CAPTURE_LHS(lhs, rhs);                                                      \
-    BARO__CAPTURE_RHS(lhs, rhs);                                                      \
-    baro__assert_values(cond, baro__lhs op baro__rhs, BARO__VALUE_KIND(baro__lhs),    \
-                        &baro__lhs, &baro__rhs, BARO__IS_POINTER(baro__lhs),          \
-                        lhs_str, rhs_str, type, desc, __FILE__, __LINE__);            \
-} while (0)
+#define BARO__COMPARE(cond, op, type, lhs, rhs, desc, end, ...) do {                                \
+    BARO__CAPTURE_LHS(lhs, rhs);                                                                    \
+    BARO__CAPTURE_RHS(lhs, rhs);                                                                    \
+    baro__assert_values(cond, baro__lhs op baro__rhs, BARO__VALUE_KIND(baro__lhs),                  \
+                        &baro__lhs, &baro__rhs, BARO__IS_POINTER(baro__lhs),                        \
+                        #lhs, #rhs, type, "" desc, __FILE__, __LINE__);                             \
+} while (0) BARO__END_##end
 #else
-#define BARO__COMPARE(cond, op, lhs, lhs_str, rhs, rhs_str, type, desc) do {          \
-    baro__assert2(cond, ((lhs) op (rhs)), lhs_str, rhs_str, type, desc, __FILE__, __LINE__); \
-} while (0)
+#define BARO__COMPARE(cond, op, type, lhs, rhs, desc, end, ...) do {                                \
+    baro__assert2(cond, ((lhs) op (rhs)), #lhs, #rhs, type, "" desc, __FILE__, __LINE__);           \
+} while (0) BARO__END_##end
 #endif
 
-#define BARO__CHECK_EQ1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_EQ, ==, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, "")
-#define BARO__CHECK_EQ2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_EQ, ==, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, " " desc)
-
-#define BARO__REQUIRE_EQ1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_EQ, ==, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, "")
-#define BARO__REQUIRE_EQ2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_EQ, ==, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, " " desc)
-
-#define BARO__CHECK_NE1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_NE, !=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, "")
-#define BARO__CHECK_NE2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_NE, !=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, " " desc)
-
-#define BARO__REQUIRE_NE1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_NE, !=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, "")
-#define BARO__REQUIRE_NE2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_NE, !=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, " " desc)
-
-#define BARO__CHECK_LT1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_LT, <, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, "")
-#define BARO__CHECK_LT2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_LT, <, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, " " desc)
-
-#define BARO__REQUIRE_LT1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_LT, <, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, "")
-#define BARO__REQUIRE_LT2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_LT, <, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, " " desc)
-
-#define BARO__CHECK_LE1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_LE, <=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, "")
-#define BARO__CHECK_LE2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_LE, <=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, " " desc)
-
-#define BARO__REQUIRE_LE1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_LE, <=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, "")
-#define BARO__REQUIRE_LE2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_LE, <=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, " " desc)
-
-#define BARO__CHECK_GT1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_GT, >, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, "")
-#define BARO__CHECK_GT2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_GT, >, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, " " desc)
-
-#define BARO__REQUIRE_GT1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_GT, >, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, "")
-#define BARO__REQUIRE_GT2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_GT, >, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, " " desc)
-
-#define BARO__CHECK_GE1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_GE, >=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, "")
-#define BARO__CHECK_GE2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_GE, >=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, " " desc)
-
-#define BARO__REQUIRE_GE1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_GE, >=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, "")
-#define BARO__REQUIRE_GE2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_GE, >=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, " " desc)
-
-#define BARO__CHECK_STR_EQ2(lhs, rhs) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_TRUE, BARO__CASE_SENSITIVE, 0, "", __FILE__, __LINE__)
-#define BARO__CHECK_STR_EQ3(lhs, rhs, desc) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_TRUE, BARO__CASE_SENSITIVE, 0, " " desc, __FILE__, __LINE__)
-
-#define BARO__REQUIRE_STR_EQ2(lhs, rhs) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_TRUE, BARO__CASE_SENSITIVE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE_STR_EQ3(lhs, rhs, desc) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_TRUE, BARO__CASE_SENSITIVE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
-
-#define BARO__CHECK_STR_NE2(lhs, rhs) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_FALSE, BARO__CASE_SENSITIVE, 0, "", __FILE__, __LINE__)
-#define BARO__CHECK_STR_NE3(lhs, rhs, desc) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_FALSE, BARO__CASE_SENSITIVE, 0, " " desc, __FILE__, __LINE__)
-
-#define BARO__REQUIRE_STR_NE2(lhs, rhs) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_FALSE, BARO__CASE_SENSITIVE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE_STR_NE3(lhs, rhs, desc) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_FALSE, BARO__CASE_SENSITIVE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
-
-#define BARO__CHECK_STR_ICASE_EQ2(lhs, rhs) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_TRUE, BARO__CASE_INSENSITIVE, 0, "", __FILE__, __LINE__)
-#define BARO__CHECK_STR_ICASE_EQ3(lhs, rhs, desc) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_TRUE, BARO__CASE_INSENSITIVE, 0, " " desc, __FILE__, __LINE__)
-
-#define BARO__REQUIRE_STR_ICASE_EQ2(lhs, rhs) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_TRUE, BARO__CASE_INSENSITIVE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE_STR_ICASE_EQ3(lhs, rhs, desc) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_TRUE, BARO__CASE_INSENSITIVE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
-
-#define BARO__CHECK_STR_ICASE_NE2(lhs, rhs) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_FALSE, BARO__CASE_INSENSITIVE, 0, "", __FILE__, __LINE__)
-#define BARO__CHECK_STR_ICASE_NE3(lhs, rhs, desc) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_FALSE, BARO__CASE_INSENSITIVE, 0, " " desc, __FILE__, __LINE__)
-
-#define BARO__REQUIRE_STR_ICASE_NE2(lhs, rhs) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_FALSE, BARO__CASE_INSENSITIVE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE_STR_ICASE_NE3(lhs, rhs, desc) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_FALSE, BARO__CASE_INSENSITIVE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
-
-#define BARO__CHECK_ARR_EQ3(lhs, rhs, size) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_TRUE, BARO__ASSERT_CHECK, "", __FILE__, __LINE__); } while (0)
-#define BARO__CHECK_ARR_EQ4(lhs, rhs, size, desc) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_TRUE, BARO__ASSERT_CHECK, " " desc, __FILE__, __LINE__); } while (0)
-
-#define BARO__REQUIRE_ARR_EQ3(lhs, rhs, size) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_TRUE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__); } while (0)
-#define BARO__REQUIRE_ARR_EQ4(lhs, rhs, size, desc) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_TRUE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__); } while (0)
-
-#define BARO__CHECK_ARR_NE3(lhs, rhs, size) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_CHECK, "", __FILE__, __LINE__); } while (0)
-#define BARO__CHECK_ARR_NE4(lhs, rhs, size, desc) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_CHECK, " " desc, __FILE__, __LINE__); } while (0)
-
-#define BARO__REQUIRE_ARR_NE3(lhs, rhs, size) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__); } while (0)
-#define BARO__REQUIRE_ARR_NE4(lhs, rhs, size, desc) do { BARO__STATIC_ASSERT(sizeof((lhs)[0]) == sizeof((rhs)[0]), "Mismatched array types"); \
-baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, sizeof((lhs)[0]), size, BARO__EXPECTING_FALSE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__); } while (0)
-
-#define BARO__GET2(_1, _2, NAME, ...) NAME
-#define BARO__GET3(_1, _2, _3, NAME, ...) NAME
-#define BARO__GET4(_1, _2, _3, _4, NAME, ...) NAME
-
-// MSVC's traditional preprocessor passes __VA_ARGS__ on as a single argument,
-// so it needs an extra expansion step. Its conforming preprocessor (selected by
-// /std:c11 and later, or /Zc:preprocessor) and clang-cl take the standard form.
-#if defined(_MSC_VER) && !defined(__clang__) && (!defined(_MSVC_TRADITIONAL) || _MSVC_TRADITIONAL)
-#define BARO__X(x) x
-#define BARO_CHECK(...) BARO__X(BARO__GET2(__VA_ARGS__, BARO__CHECK2, BARO__CHECK1)) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE(...) BARO__X(BARO__GET2(__VA_ARGS__, BARO__REQUIRE2, BARO__REQUIRE1)) \
-BARO__X((__VA_ARGS__))
-#define BARO_CHECK_FALSE(...) BARO__X(BARO__GET2(__VA_ARGS__, BARO__CHECK_FALSE2, BARO__CHECK_FALSE1)) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE_FALSE(...) BARO__X(BARO__GET2(__VA_ARGS__, BARO__REQUIRE_FALSE2, BARO__REQUIRE_FALSE1)) \
-BARO__X((__VA_ARGS__))
-#define BARO_CHECK_EQ(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__CHECK_EQ2, BARO__CHECK_EQ1, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE_EQ(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__REQUIRE_EQ2, BARO__REQUIRE_EQ1, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_CHECK_NE(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__CHECK_NE2, BARO__CHECK_NE1, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE_NE(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__REQUIRE_NE2, BARO__REQUIRE_NE1, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_CHECK_LT(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__CHECK_LT2, BARO__CHECK_LT1, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE_LT(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__REQUIRE_LT2, BARO__REQUIRE_LT1, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_CHECK_LE(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__CHECK_LE2, BARO__CHECK_LE1, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE_LE(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__REQUIRE_LE2, BARO__REQUIRE_LE1, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_CHECK_GT(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__CHECK_GT2, BARO__CHECK_GT1, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE_GT(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__REQUIRE_GT2, BARO__REQUIRE_GT1, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_CHECK_GE(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__CHECK_GE2, BARO__CHECK_GE1, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE_GE(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__REQUIRE_GE2, BARO__REQUIRE_GE1, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_CHECK_STR_EQ(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__CHECK_STR_EQ3, BARO__CHECK_STR_EQ2, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE_STR_EQ(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__REQUIRE_STR_EQ3, BARO__REQUIRE_STR_EQ2, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_CHECK_STR_NE(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__CHECK_STR_NE3, BARO__CHECK_STR_NE2, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE_STR_NE(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__REQUIRE_STR_NE3, BARO__REQUIRE_STR_NE2, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_CHECK_STR_ICASE_EQ(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__CHECK_STR_ICASE_EQ3, BARO__CHECK_STR_ICASE_EQ2, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE_STR_ICASE_EQ(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__REQUIRE_STR_ICASE_EQ3, BARO__REQUIRE_STR_ICASE_EQ2, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_CHECK_STR_ICASE_NE(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__CHECK_STR_ICASE_NE3, BARO__CHECK_STR_ICASE_NE2, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE_STR_ICASE_NE(...) BARO__X(BARO__GET3(__VA_ARGS__, BARO__REQUIRE_STR_ICASE_NE3, BARO__REQUIRE_STR_ICASE_NE2, )) \
-BARO__X((__VA_ARGS__))
-#define BARO_CHECK_ARR_EQ(...) BARO__X(BARO__GET4(__VA_ARGS__, BARO__CHECK_ARR_EQ4, BARO__CHECK_ARR_EQ3, , )) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE_ARR_EQ(...) BARO__X(BARO__GET4(__VA_ARGS__, BARO__REQUIRE_ARR_EQ4, BARO__REQUIRE_ARR_EQ3, , )) \
-BARO__X((__VA_ARGS__))
-#define BARO_CHECK_ARR_NE(...) BARO__X(BARO__GET4(__VA_ARGS__, BARO__CHECK_ARR_NE4, BARO__CHECK_ARR_NE3, , )) \
-BARO__X((__VA_ARGS__))
-#define BARO_REQUIRE_ARR_NE(...) BARO__X(BARO__GET4(__VA_ARGS__, BARO__REQUIRE_ARR_NE4, BARO__REQUIRE_ARR_NE3, , )) \
-BARO__X((__VA_ARGS__))
-#else
-#define BARO_CHECK(...) BARO__GET2(__VA_ARGS__, BARO__CHECK2, BARO__CHECK1, ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE(...) BARO__GET2(__VA_ARGS__, BARO__REQUIRE2, BARO__REQUIRE1, ) \
-(__VA_ARGS__)
-#define BARO_CHECK_FALSE(...) BARO__GET2(__VA_ARGS__, BARO__CHECK_FALSE2, BARO__CHECK_FALSE1, ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE_FALSE(...) BARO__GET2(__VA_ARGS__, BARO__REQUIRE_FALSE2, BARO__REQUIRE_FALSE1, ) \
-(__VA_ARGS__)
-#define BARO_CHECK_EQ(...) BARO__GET3(__VA_ARGS__, BARO__CHECK_EQ2, BARO__CHECK_EQ1, ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE_EQ(...) BARO__GET3(__VA_ARGS__, BARO__REQUIRE_EQ2, BARO__REQUIRE_EQ1, ) \
-(__VA_ARGS__)
-#define BARO_CHECK_NE(...) BARO__GET3(__VA_ARGS__, BARO__CHECK_NE2, BARO__CHECK_NE1, ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE_NE(...) BARO__GET3(__VA_ARGS__, BARO__REQUIRE_NE2, BARO__REQUIRE_NE1, ) \
-(__VA_ARGS__)
-#define BARO_CHECK_LT(...) BARO__GET3(__VA_ARGS__, BARO__CHECK_LT2, BARO__CHECK_LT1, ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE_LT(...) BARO__GET3(__VA_ARGS__, BARO__REQUIRE_LT2, BARO__REQUIRE_LT1, ) \
-(__VA_ARGS__)
-#define BARO_CHECK_LE(...) BARO__GET3(__VA_ARGS__, BARO__CHECK_LE2, BARO__CHECK_LE1, ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE_LE(...) BARO__GET3(__VA_ARGS__, BARO__REQUIRE_LE2, BARO__REQUIRE_LE1, ) \
-(__VA_ARGS__)
-#define BARO_CHECK_GT(...) BARO__GET3(__VA_ARGS__, BARO__CHECK_GT2, BARO__CHECK_GT1, ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE_GT(...) BARO__GET3(__VA_ARGS__, BARO__REQUIRE_GT2, BARO__REQUIRE_GT1, ) \
-(__VA_ARGS__)
-#define BARO_CHECK_GE(...) BARO__GET3(__VA_ARGS__, BARO__CHECK_GE2, BARO__CHECK_GE1, ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE_GE(...) BARO__GET3(__VA_ARGS__, BARO__REQUIRE_GE2, BARO__REQUIRE_GE1, ) \
-(__VA_ARGS__)
-#define BARO_CHECK_STR_EQ(...) BARO__GET3(__VA_ARGS__, BARO__CHECK_STR_EQ3, BARO__CHECK_STR_EQ2, ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE_STR_EQ(...) BARO__GET3(__VA_ARGS__, BARO__REQUIRE_STR_EQ3, BARO__REQUIRE_STR_EQ2, ) \
-(__VA_ARGS__)
-#define BARO_CHECK_STR_NE(...) BARO__GET3(__VA_ARGS__, BARO__CHECK_STR_NE3, BARO__CHECK_STR_NE2, ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE_STR_NE(...) BARO__GET3(__VA_ARGS__, BARO__REQUIRE_STR_NE3, BARO__REQUIRE_STR_NE2, ) \
-(__VA_ARGS__)
-#define BARO_CHECK_STR_ICASE_EQ(...) BARO__GET3(__VA_ARGS__, BARO__CHECK_STR_ICASE_EQ3, BARO__CHECK_STR_ICASE_EQ2, ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE_STR_ICASE_EQ(...) BARO__GET3(__VA_ARGS__, BARO__REQUIRE_STR_ICASE_EQ3, BARO__REQUIRE_STR_ICASE_EQ2, ) \
-(__VA_ARGS__)
-#define BARO_CHECK_STR_ICASE_NE(...) BARO__GET3(__VA_ARGS__, BARO__CHECK_STR_ICASE_NE3, BARO__CHECK_STR_ICASE_NE2, ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE_STR_ICASE_NE(...) BARO__GET3(__VA_ARGS__, BARO__REQUIRE_STR_ICASE_NE3, BARO__REQUIRE_STR_ICASE_NE2, ) \
-(__VA_ARGS__)
-#define BARO_CHECK_ARR_EQ(...) BARO__GET4(__VA_ARGS__, BARO__CHECK_ARR_EQ4, BARO__CHECK_ARR_EQ3, , ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE_ARR_EQ(...) BARO__GET4(__VA_ARGS__, BARO__REQUIRE_ARR_EQ4, BARO__REQUIRE_ARR_EQ3, , ) \
-(__VA_ARGS__)
-#define BARO_CHECK_ARR_NE(...) BARO__GET4(__VA_ARGS__, BARO__CHECK_ARR_NE4, BARO__CHECK_ARR_NE3, , ) \
-(__VA_ARGS__)
-#define BARO_REQUIRE_ARR_NE(...) BARO__GET4(__VA_ARGS__, BARO__REQUIRE_ARR_NE4, BARO__REQUIRE_ARR_NE3, , ) \
-(__VA_ARGS__)
-#endif//traditional MSVC preprocessor
+#define BARO_CHECK(...) BARO__EXPAND(BARO__TRUTH(BARO__EXPECTING_TRUE, BARO__ASSERT_CHECK,          \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE(...) BARO__EXPAND(BARO__TRUTH(BARO__EXPECTING_TRUE, BARO__ASSERT_REQUIRE,      \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_CHECK_FALSE(...) BARO__EXPAND(BARO__TRUTH(BARO__EXPECTING_FALSE, BARO__ASSERT_CHECK,   \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE_FALSE(...) BARO__EXPAND(BARO__TRUTH(BARO__EXPECTING_FALSE, BARO__ASSERT_REQUIRE,\
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_CHECK_EQ(...) BARO__EXPAND(BARO__COMPARE(BARO__ASSERT_EQ, ==, BARO__ASSERT_CHECK,      \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE_EQ(...) BARO__EXPAND(BARO__COMPARE(BARO__ASSERT_EQ, ==, BARO__ASSERT_REQUIRE,  \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_CHECK_NE(...) BARO__EXPAND(BARO__COMPARE(BARO__ASSERT_NE, !=, BARO__ASSERT_CHECK,      \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE_NE(...) BARO__EXPAND(BARO__COMPARE(BARO__ASSERT_NE, !=, BARO__ASSERT_REQUIRE,  \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_CHECK_LT(...) BARO__EXPAND(BARO__COMPARE(BARO__ASSERT_LT, <, BARO__ASSERT_CHECK,       \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE_LT(...) BARO__EXPAND(BARO__COMPARE(BARO__ASSERT_LT, <, BARO__ASSERT_REQUIRE,   \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_CHECK_LE(...) BARO__EXPAND(BARO__COMPARE(BARO__ASSERT_LE, <=, BARO__ASSERT_CHECK,      \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE_LE(...) BARO__EXPAND(BARO__COMPARE(BARO__ASSERT_LE, <=, BARO__ASSERT_REQUIRE,  \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_CHECK_GT(...) BARO__EXPAND(BARO__COMPARE(BARO__ASSERT_GT, >, BARO__ASSERT_CHECK,       \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE_GT(...) BARO__EXPAND(BARO__COMPARE(BARO__ASSERT_GT, >, BARO__ASSERT_REQUIRE,   \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_CHECK_GE(...) BARO__EXPAND(BARO__COMPARE(BARO__ASSERT_GE, >=, BARO__ASSERT_CHECK,      \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE_GE(...) BARO__EXPAND(BARO__COMPARE(BARO__ASSERT_GE, >=, BARO__ASSERT_REQUIRE,  \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_CHECK_STR_EQ(...) BARO__EXPAND(BARO__STRING(BARO__EXPECTING_TRUE, BARO__CASE_SENSITIVE, BARO__ASSERT_CHECK,\
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE_STR_EQ(...) BARO__EXPAND(BARO__STRING(BARO__EXPECTING_TRUE, BARO__CASE_SENSITIVE, BARO__ASSERT_REQUIRE,\
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_CHECK_STR_NE(...) BARO__EXPAND(BARO__STRING(BARO__EXPECTING_FALSE, BARO__CASE_SENSITIVE, BARO__ASSERT_CHECK,\
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE_STR_NE(...) BARO__EXPAND(BARO__STRING(BARO__EXPECTING_FALSE, BARO__CASE_SENSITIVE, BARO__ASSERT_REQUIRE,\
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_CHECK_STR_ICASE_EQ(...) BARO__EXPAND(BARO__STRING(BARO__EXPECTING_TRUE, BARO__CASE_INSENSITIVE, BARO__ASSERT_CHECK,\
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE_STR_ICASE_EQ(...) BARO__EXPAND(BARO__STRING(BARO__EXPECTING_TRUE, BARO__CASE_INSENSITIVE, BARO__ASSERT_REQUIRE,\
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_CHECK_STR_ICASE_NE(...) BARO__EXPAND(BARO__STRING(BARO__EXPECTING_FALSE, BARO__CASE_INSENSITIVE, BARO__ASSERT_CHECK,\
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE_STR_ICASE_NE(...) BARO__EXPAND(BARO__STRING(BARO__EXPECTING_FALSE, BARO__CASE_INSENSITIVE, BARO__ASSERT_REQUIRE,\
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_CHECK_ARR_EQ(...) BARO__EXPAND(BARO__ARRAY(BARO__EXPECTING_TRUE, BARO__ASSERT_CHECK,   \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE_ARR_EQ(...) BARO__EXPAND(BARO__ARRAY(BARO__EXPECTING_TRUE, BARO__ASSERT_REQUIRE,\
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_CHECK_ARR_NE(...) BARO__EXPAND(BARO__ARRAY(BARO__EXPECTING_FALSE, BARO__ASSERT_CHECK,  \
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
+#define BARO_REQUIRE_ARR_NE(...) BARO__EXPAND(BARO__ARRAY(BARO__EXPECTING_FALSE, BARO__ASSERT_REQUIRE,\
+    __VA_ARGS__, BARO__OMITTED, BARO__OMITTED, 0))
 
 // Typed assertions deliberately convert operands to the named type.
 #ifdef BARO_ENABLE
