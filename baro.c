@@ -44,7 +44,15 @@ struct baro__result {
     int ran, failed;
     size_t asserts, asserts_failed;
     const char *reason;
+    double seconds;
 };
+
+static const char *baro__value(int *arg, int argc, char *argv[]) {
+    const char *option = argv[*arg];
+    if (++*arg < argc) return argv[*arg];
+    fprintf(stderr, "Missing value for %s\n", option);
+    return NULL;
+}
 
 #include "baro_process.h"
 
@@ -125,20 +133,31 @@ static void baro__xml(FILE *out, const char *text) {
     }
 }
 
+/* printf's decimal separator follows the locale a test may have set. */
+static void baro__junit_time(FILE *out, double seconds) {
+    unsigned long long milliseconds = (unsigned long long)(seconds * 1000 + 0.5);
+    fprintf(out, " time=\"%llu.%03llu\">", milliseconds / 1000, milliseconds % 1000);
+}
+
 static int baro__junit(const char *path, struct baro__test_list *tests,
                        struct baro__result *results) {
     FILE *out = fopen(path, "wb");
     if (!out) { perror("Cannot write JUnit report"); return 0; }
+    double total = 0;
+    for (size_t i = 0; i < tests->size; i++) total += results[i].seconds;
     fprintf(out, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-                 "<testsuite name=\"baro\" tests=\"%zu\" failures=\"%zu\">\n",
+                 "<testsuite name=\"baro\" tests=\"%zu\" failures=\"%zu\"",
                  baro__c.num_tests_ran, baro__c.num_tests_failed);
+    baro__junit_time(out, total);
+    fputc('\n', out);
     for (size_t i = 0; i < tests->size; i++) {
         if (!results[i].ran) continue;
         fputs("  <testcase name=\"", out);
         baro__xml(out, tests->tests[i].tag->desc);
         fputs("\" file=\"", out);
         baro__xml(out, tests->tests[i].tag->file_path);
-        fprintf(out, "\" line=\"%d\" assertions=\"%zu\">", tests->tests[i].tag->line_num, results[i].asserts);
+        fprintf(out, "\" line=\"%d\" assertions=\"%zu\"", tests->tests[i].tag->line_num, results[i].asserts);
+        baro__junit_time(out, results[i].seconds);
         if (results[i].failed) {
             fputs("<failure message=\"", out);
             baro__xml(out, results[i].reason ? results[i].reason : "Assertion failure");
@@ -252,6 +271,33 @@ static void baro__run_one(const struct baro__test *test, int recover_abort) {
     if (recover_abort) set_sigabrt_handler(NULL);
 }
 
+static void baro__usage(const char *program, size_t total) {
+    printf("Unit test suite, powered by baro; %zu tests loaded\n"
+           "Usage: %s [options]\n"
+           "Options:\n"
+           "  -a                   Show all tests, even passing ones\n"
+           "  -o                   Show all standard output (stdout), including passed tests\n"
+           "  -e                   Hide standard error (stderr) output\n"
+           "  -s                   Stop running after the first failure\n"
+           "  -t <tag1,tag2,...>   Only run tests with one of these [tags]\n"
+           "  -p <num_partitions>  Total number of partitions, 1-based\n"
+           "  -n <cur_partition>   Current partition index, 1-based\n"
+           "  --jobs <count>       Concurrent isolated tests (default 1)\n"
+           "  --timeout <seconds>  Isolated test deadline (s or ms suffix)\n"
+           "  --isolate            Run each test in a fresh child process\n"
+           "  --ctest              Single-test adapter mode (CTest owns process)\n"
+           "  --test-id <id>       Select one test from this executable inventory\n"
+           "  --list-tests-json    Print versioned JSON inventory\n"
+           "  --diagnostics <mode> plain or compiler (clickable source locations)\n"
+           "  --list-tests         List selected tests without executing\n"
+           "  --test <name>        Select an exact test description\n"
+           "  --allow-empty        Permit zero selected tests\n"
+           "  --junit <path>       Write JUnit XML\n"
+           "  --recover-abort, -r  Best-effort in-process SIGABRT recovery\n"
+           "  -h, --help           Show this help text\n",
+           total, program);
+}
+
 int baro_run(
         int argc,
         char *argv[]) {
@@ -281,12 +327,13 @@ int baro_run(
         const char *option = argv[arg];
         if (strncmp(option, "--", 2) == 0) {
             if (!strcmp(option, "--ctest")) { ctest_mode = 1; continue; }
+            if (!strcmp(option, "--help")) { baro__usage(argv[0], total_num_tests); return EXIT_SUCCESS; }
             if (!strcmp(option, "--test-id")) {
-                if (++arg == argc || !(test_id = baro__positive(argv[arg]))) return EXIT_FAILURE;
+                if (!baro__value(&arg, argc, argv) || !(test_id = baro__positive(argv[arg]))) return EXIT_FAILURE;
                 continue;
             }
             if (!strcmp(option, "--diagnostics")) {
-                if (++arg == argc) return EXIT_FAILURE;
+                if (!baro__value(&arg, argc, argv)) return EXIT_FAILURE;
                 if (!strcmp(argv[arg], "compiler")) compiler_diagnostics = 1;
                 else if (!strcmp(argv[arg], "plain")) compiler_diagnostics = 0;
                 else { fprintf(stderr, "Expected diagnostics: plain or compiler\n"); return EXIT_FAILURE; }
@@ -294,19 +341,22 @@ int baro_run(
             }
             if (!strcmp(option, "--list-tests-json")) { list_tests = 2; continue; }
             if (!strcmp(option, "--jobs") || !strcmp(option, "--timeout")) {
-                if (++arg == argc) return EXIT_FAILURE;
+                if (!baro__value(&arg, argc, argv)) return EXIT_FAILURE;
                 if (!strcmp(option, "--jobs")) { jobs = baro__positive(argv[arg]); if (!jobs) return EXIT_FAILURE; }
                 else {
                     char *end; errno = 0; timeout = strtod(argv[arg], &end);
+                    int valid = end != argv[arg] && (!*end || !strcmp(end, "s") || !strcmp(end, "ms"));
                     if (!strcmp(end, "ms")) timeout /= 1000;
-                    else if (*end && strcmp(end, "s")) return EXIT_FAILURE;
-                    if (errno || !isfinite(timeout) || timeout <= 0) return EXIT_FAILURE;
+                    if (!valid || errno || !isfinite(timeout) || timeout <= 0) {
+                        fprintf(stderr, "Expected a positive duration such as 10, 10s or 500ms: %s\n", argv[arg]);
+                        return EXIT_FAILURE;
+                    }
                 }
                 continue;
             }
             if (!strcmp(option, "--isolate")) { isolate = 1; continue; }
             if (!strcmp(option, "--baro-child") || !strcmp(option, "--baro-result")) {
-                if (++arg == argc) return EXIT_FAILURE;
+                if (!baro__value(&arg, argc, argv)) return EXIT_FAILURE;
                 if (!strcmp(option, "--baro-child")) { child_id = baro__positive(argv[arg]); if (!child_id) return EXIT_FAILURE; }
                 else child_result = argv[arg];
                 continue;
@@ -315,7 +365,7 @@ int baro_run(
             if (!strcmp(option, "--allow-empty")) { allow_empty = 1; continue; }
             if (!strcmp(option, "--recover-abort")) { recover_abort = 1; continue; }
             if (!strcmp(option, "--test") || !strcmp(option, "--junit")) {
-                if (++arg == argc) { fprintf(stderr, "Missing value for %s\n", option); return EXIT_FAILURE; }
+                if (!baro__value(&arg, argc, argv)) return EXIT_FAILURE;
                 if (!strcmp(option, "--test")) exact_name = argv[arg];
                 else junit_path = argv[arg];
                 continue;
@@ -365,30 +415,7 @@ int baro_run(
             break;
 
         case 'h':
-            printf("Unit test suite, powered by baro; %zu tests loaded\n"
-                   "Usage: %s [options]\n"
-                   "Options:\n"
-                   "  -a                   Show all tests, even passing ones\n"
-                   "  -o                   Show all standard output (stdout), including passed tests\n"
-                   "  -e                   Hide standard error (stderr) output\n"
-                   "  -s                   Stop running after the first failure\n"
-                   "  -t <tag1,tag2,...>   Only run tests with one of these [tags]\n"
-                   "  -p <num_partitions>  Total number of partitions, 1-based\n"
-                   "  -n <cur_partition>   Current partition index, 1-based\n"
-                   "  --jobs <count>       Concurrent isolated tests (default 1)\n"
-                   "  --timeout <seconds>  Isolated test deadline (s or ms suffix)\n"
-                   "  --isolate            Run each test in a fresh child process\n"
-                   "  --ctest              Single-test adapter mode (CTest owns process)\n"
-                   "  --test-id <id>       Select one test from this executable inventory\n"
-                   "  --list-tests-json    Print versioned JSON inventory\n"
-                   "  --diagnostics <mode> plain or compiler (clickable source locations)\n"
-                   "  --list-tests         List selected tests without executing\n"
-                   "  --test <name>        Select an exact test description\n"
-                   "  --allow-empty        Permit zero selected tests\n"
-                   "  --junit <path>       Write JUnit XML\n"
-                   "  --recover-abort, -r  Best-effort in-process SIGABRT recovery\n"
-                   "  -h                   Show this help text\n",
-                   total_num_tests, argv[0]);
+            baro__usage(argv[0], total_num_tests);
             return 0;
 
         default:
@@ -460,12 +487,12 @@ int baro_run(
     size_t const num_tests = tests.size;
     if (num_tests > 0 && (num_partitions < 1 || num_partitions > num_tests)) {
         fprintf(stderr, "Invalid number of partitions %zu, value should be"
-                        "between 1 and %zu\n", num_partitions, num_tests);
+                        " between 1 and %zu\n", num_partitions, num_tests);
         return EXIT_FAILURE;
     }
 
     if (cur_partition < 1 || cur_partition > num_partitions) {
-        fprintf(stderr, "Invalid current partition %zu, value should between 1"
+        fprintf(stderr, "Invalid current partition %zu, value should be between 1"
                         " and %zu inclusive\n", cur_partition, num_partitions);
         return EXIT_FAILURE;
     }
@@ -524,7 +551,7 @@ int baro_run(
         size_t workers = jobs < num_tests_to_run ? jobs : num_tests_to_run;
         struct baro__slot *slots = calloc(workers ? workers : 1, sizeof(*slots));
         if (!slots) return EXIT_FAILURE;
-        size_t next = first_test, active = 0;
+        size_t next = first_test, active = 0, idle = 0;
         int stopped = 0;
         while (active || (!stopped && next < last_test)) {
             for (size_t worker = 0; worker < workers; worker++) {
@@ -535,7 +562,7 @@ int baro_run(
                     if (baro__process_start(&slot->process, exe, slot->id, compiler_diagnostics)) {
                         slot->active = 1; active++;
                     } else {
-                        results[slot->index] = (struct baro__result){1, 1, 0, 0, "Could not launch test"};
+                        results[slot->index] = (struct baro__result){1, 1, 0, 0, "Could not launch test", 0};
                         baro__c.num_tests_ran++; baro__c.num_tests_failed++;
                         fprintf(stderr, "Failed to launch: %s\n", tests.tests[slot->index].tag->desc);
                         if (stop_after_failure) stopped = 1;
@@ -544,6 +571,7 @@ int baro_run(
                 if (!slot->active || !baro__process_poll(&slot->process, timeout)) continue;
                 size_t i = slot->index;
                 results[i] = baro__process_result(&slot->process, slot->id);
+                results[i].seconds = baro__monotonic() - slot->process.started;
                 if (tests.tests[i].expect_abort) {
                     if (results[i].reason && !strcmp(results[i].reason, "SIGABRT")) {
                         results[i].failed = 0; results[i].reason = NULL;
@@ -555,7 +583,7 @@ int baro_run(
                 if (!suppress_stdout || results[i].failed) baro__process_output(slot->process.out, stdout, suppress_stdout);
                 if (!suppress_stderr) baro__process_output(slot->process.err, stderr, 0);
                 baro__process_dispose(&slot->process);
-                slot->active = 0; active--;
+                slot->active = 0; active--; idle = 0;
                 baro__c.num_tests_ran++;
                 baro__c.num_tests_failed += results[i].failed;
                 baro__c.num_asserts += results[i].asserts;
@@ -566,7 +594,7 @@ int baro_run(
                            results[i].reason ? results[i].reason : "");
                 if (results[i].failed && stop_after_failure) stopped = 1;
             }
-            if (active) baro__process_pause();
+            if (active) baro__process_pause(idle++);
         }
         free(slots);
     } else {
@@ -576,7 +604,9 @@ int baro_run(
             size_t const before_asserts = baro__c.num_asserts;
             size_t const before_failed = baro__c.num_asserts_failed;
             if (ctest_mode && test->expect_abort) signal(SIGABRT, baro__ctest_abort);
+            double const started = baro__monotonic();
             baro__run_one(test, recover_abort);
+            results[i].seconds = baro__monotonic() - started;
             if (ctest_mode && test->expect_abort) {
                 signal(SIGABRT, SIG_DFL);
                 baro__c.current_test_failed = 1;

@@ -123,8 +123,9 @@ code that may abort. Ordinary Baro requirements do not raise a signal.
 - `--test "exact description"`: select by exact description (combined with tags).
 - `--list-tests`: list selected tests without running them.
 - `--allow-empty`: explicitly allow a selection matching no tests.
-- `--junit path.xml`: write JUnit results as well as console output.
-- `-h`: help.
+- `--junit path.xml`: write JUnit results, including each test's duration, as
+  well as console output.
+- `-h`, `--help`: help.
 
 Exit status is zero on success and nonzero on test, argument, or report-writing
 failure. No matching tests is an error by default. Test descriptions should be
@@ -178,7 +179,8 @@ descendants terminated. Escaping those process groups/jobs is unsupported.
 With `-s`, no new tests launch after the parent observes a failure. Already
 running tests finish or reach their deadlines. Console output is grouped by
 completed child; JUnit entries remain in selection order. Aborted/crashed tests
-have no completed assertion totals; they still count as failed tests.
+have no completed assertion totals; they still count as failed tests. On POSIX
+a child ended by a common fatal signal is reported by name, such as `SIGSEGV`.
 
 `TEST_ABORT("description") { ... }` (or `BARO_TEST_ABORT`) expects SIGABRT and
 requires isolation or the CTest adapter described below. Normal return, premature exit, and timeout are failures.

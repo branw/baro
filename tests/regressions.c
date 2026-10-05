@@ -217,6 +217,8 @@ TEST("[isolated_state] first") { CHECK_EQ(++isolated_state, 1); }
 TEST("[isolated_state] second") { CHECK_EQ(++isolated_state, 1); }
 TEST("[isolated_exit] premature success") { exit(0); }
 TEST("[isolated_crash] signal") { raise(SIGSEGV); }
+// Sanitizers intercept SIGSEGV and exit instead; they leave SIGTERM alone.
+TEST("[isolated_term] named signal") { raise(SIGTERM); }
 
 #ifdef _WIN32
 #include <windows.h>

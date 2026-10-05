@@ -50,11 +50,14 @@ static double baro__monotonic(void) {
 #endif
 }
 
-static void baro__process_pause(void) {
+/* Back off from 0.25 ms to 4 ms while no child completes, so short tests are
+ * collected promptly and long ones are not polled in a tight loop. */
+static void baro__process_pause(size_t idle) {
+    long microseconds = 250L << (idle < 4 ? idle : 4);
 #ifdef _WIN32
-    Sleep(5);
+    Sleep((DWORD)(microseconds < 1000 ? 1 : microseconds / 1000));
 #else
-    struct timespec delay = {0, 5000000};
+    struct timespec delay = {0, microseconds * 1000};
     nanosleep(&delay, NULL);
 #endif
 }
@@ -178,19 +181,27 @@ static int baro__process_poll(struct baro__process *p, double timeout) {
     p->status = (int)code;
     CloseHandle(p->process); CloseHandle(p->job);
 #else
-    int status;
-    pid_t result = waitpid(p->pid, &status, WNOHANG);
-    if (!result) {
+    // Look without reaping: while the child remains a zombie its process group
+    // ID cannot be reused, so the group can still be signalled safely.
+    siginfo_t info;
+    memset(&info, 0, sizeof(info));
+    if (waitid(P_PID, (id_t)p->pid, &info, WEXITED | WNOHANG | WNOWAIT)) {
+        if (errno == EINTR) return 0;
+        p->status = -1;
+        return 1;
+    }
+    if (info.si_pid != p->pid) {
         if (timeout <= 0 || baro__monotonic() - p->started < timeout) return 0;
         p->timed_out = 1;
-        kill(-p->pid, SIGKILL);
-        do { result = waitpid(p->pid, &status, 0); } while (result < 0 && errno == EINTR);
     }
-    if (result < 0 && errno == EINTR) return 0;
+    // Ends a test that ran out of time, and in every case the descendants it
+    // left running.
+    kill(-p->pid, SIGKILL);
+    int status;
+    pid_t result;
+    do { result = waitpid(p->pid, &status, 0); } while (result < 0 && errno == EINTR);
     if (result < 0) p->status = -1;
     else p->status = WIFEXITED(status) ? WEXITSTATUS(status) : -WTERMSIG(status);
-    // Do not leave grandchildren running after their test has completed.
-    kill(-p->pid, SIGKILL);
 #endif
     return 1;
 }
@@ -205,8 +216,20 @@ static void baro__process_output(FILE *file, FILE *dest, int tail) {
 }
 
 static struct baro__result baro__process_result(struct baro__process *p, size_t id) {
-    struct baro__result result = {1, 1, 0, 0, "Abnormal termination"};
+    struct baro__result result = {1, 1, 0, 0, "Abnormal termination", 0};
     if (p->timed_out) { result.reason = "Timeout"; return result; }
+#ifndef _WIN32
+    /* A negative status is the signal that ended the child. */
+    switch (-p->status) {
+    case SIGSEGV: result.reason = "Terminated by SIGSEGV"; break;
+    case SIGBUS: result.reason = "Terminated by SIGBUS"; break;
+    case SIGFPE: result.reason = "Terminated by SIGFPE"; break;
+    case SIGILL: result.reason = "Terminated by SIGILL"; break;
+    case SIGKILL: result.reason = "Terminated by SIGKILL"; break;
+    case SIGTERM: result.reason = "Terminated by SIGTERM"; break;
+    default: break;
+    }
+#endif
     FILE *file = fopen(p->result_path, "rb");
     if (!file) return result;
     char magic[32] = {0}; size_t received_id, assertions, failed;
