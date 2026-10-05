@@ -46,7 +46,9 @@ ctest --preset debug
 Substitute `release` or `sanitizers` to use separate build trees under `out/`.
 On Windows, use a Visual Studio developer shell so Ninja can find MSVC. The
 sanitizer preset uses AddressSanitizer on MSVC and AddressSanitizer plus UBSan on
-GCC/Clang. The coverage preset requires GCC or Clang and gcovr 8.6:
+GCC/Clang. Programs built with MSVC's AddressSanitizer load its runtime DLL at
+startup; a developer shell has it on `PATH`, and elsewhere the directory that
+holds `cl.exe` must be added, or the programs cannot start. The coverage preset requires GCC or Clang and gcovr 8.6:
 
 ```sh
 cmake --preset coverage

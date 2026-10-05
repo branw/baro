@@ -14,13 +14,22 @@ jobs:
     runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@v4
+      # Programs built with MSVC's /fsanitize=address load this DLL at startup.
+      - name: Add the MSVC AddressSanitizer runtime to PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dll = & $vswhere -latest -products * -find 'VC\Tools\MSVC\*\bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll' | Select-Object -Last 1
+          if (-not $dll) { throw "MSVC AddressSanitizer runtime not found" }
+          Split-Path $dll | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Configure
         shell: bash
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBARO_SANITIZERS=ON -DCMAKE_C_COMPILER=${{ matrix.platform.cc }}
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }}
       - name: Test
-        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure --timeout 300
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
