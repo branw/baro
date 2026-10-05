@@ -103,8 +103,10 @@ callback ends that callback and remaining callbacks still run.
 
 `SUBTEST("description") { ... }` creates a branch. The top-level body is rerun
 for each leaf, allowing fresh setup for each traversal. A failed `REQUIRE` ends
-all remaining traversals of that top-level test. Avoid `return`, `break`, or
-`goto` escaping a subtest; use assertions to control failure.
+all remaining traversals of that top-level test. Do not leave a subtest with
+`return`, `break`, or `goto`, and do not reach the same `SUBTEST` twice in one
+traversal (from a loop or a repeated helper call). Either would skip subtests
+silently, so the runner reports it as a failure of that test.
 
 Cleanup is not guaranteed after an abort, crash, or forced termination.
 In-process `--recover-abort` (`-r`) is explicitly best-effort: jumping out of a

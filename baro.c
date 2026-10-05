@@ -173,6 +173,20 @@ static void handle_signal(int signum) {
     }
 }
 
+void baro__subtest_error(struct baro__tag const *tag, char const *message) {
+    baro__failure_pending = 1;
+    baro__c.current_test_failed = 1;
+    baro__c.num_asserts++;
+    baro__c.num_asserts_failed++;
+
+    baro__redirect_output(&baro__c, 0);
+
+    printf(BARO__RED "Subtest error: %s\n" BARO__UNSET_COLOR, message);
+    printf("    %s\n", tag->desc);
+    baro__report_location(tag->file_path, tag->line_num);
+    baro__assert_failed(BARO__ASSERT_CHECK, 0);
+}
+
 static void baro__run_one(const struct baro__test *test, int recover_abort) {
     baro__c.current_test = test;
     baro__c.current_test_failed = 0;
@@ -209,9 +223,22 @@ static void baro__run_one(const struct baro__test *test, int recover_abort) {
         baro__c.should_reenter_subtest = 0;
         baro__c.subtest_max_size = 0;
         baro__tag_list_clear(&baro__c.subtest_stack);
+        baro__c.escaped_subtest = NULL;
 
         test->func();
         baro__run_cleanups();
+
+        // A subtest still on the stack was left without reaching its end, so
+        // its siblings were skipped and it can never be marked as visited.
+        if (baro__c.subtest_stack.size && !baro__c.escaped_subtest) {
+            baro__c.escaped_subtest = baro__c.subtest_stack.tags[baro__c.subtest_stack.size - 1];
+        }
+        if (baro__c.escaped_subtest) {
+            baro__subtest_error(baro__c.escaped_subtest,
+                                "subtest left by return, break, or goto; "
+                                "remaining subtests did not run");
+            break;
+        }
 
         // Keep looping until all subtest permutations have been visited
         if (!baro__c.should_reenter_subtest) {

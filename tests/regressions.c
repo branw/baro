@@ -187,6 +187,31 @@ TEST("[typed_ops_fail] expressions and values") {
     fprintf(stderr, "UNREACHABLE\n");
 }
 
+static int subtest_escapes = 1;
+TEST("[subtest_return] leaving a subtest early") {
+    SUBTEST("left by return") { if (subtest_escapes) return; }
+    SUBTEST("skipped sibling") { CHECK(1); }
+}
+TEST("[subtest_break] leaving a nested subtest early") {
+    SUBTEST("enclosing") {
+        SUBTEST("left by break") { break; }
+    }
+    SUBTEST("skipped sibling") { CHECK(1); }
+}
+static void helper_with_subtest(void) {
+    SUBTEST("in helper") { CHECK(1); }
+}
+TEST("[subtest_helper] helper called twice at one level") {
+    helper_with_subtest();
+    helper_with_subtest();
+    SUBTEST("later sibling still runs") { CHECK(1); }
+}
+TEST("[subtest_loop] subtest inside a loop") {
+    for (int i = 0; i < 3; i++) {
+        SUBTEST("repeated") { CHECK(1); }
+    }
+}
+
 static int isolated_state;
 TEST("[isolated_state] first") { CHECK_EQ(++isolated_state, 1); }
 TEST("[isolated_state] second") { CHECK_EQ(++isolated_state, 1); }

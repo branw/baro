@@ -101,7 +101,7 @@ add_executable(baro_regressions tests/regressions.c)
 target_link_libraries(baro_regressions PRIVATE baro::main)
 foreach(case numeric float_failure require output suppression descriptors many
              abort cleanup cleanup_failure null_strings null_failures capture4095 capture4096 capture4097
-             capture9000 capture_isolation)
+             capture9000 capture_isolation subtest_return subtest_break subtest_loop subtest_helper)
     add_test(NAME regression_${case}
         COMMAND ${CMAKE_COMMAND}
             "-DPROGRAM=$<TARGET_FILE:baro_regressions>"

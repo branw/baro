@@ -304,6 +304,8 @@ struct baro__context {
     size_t subtest_max_size;
     int should_reenter_subtest;
     int subtest_entered;
+    // First subtest found to have been left without reaching its end.
+    struct baro__tag const *escaped_subtest;
 
 #ifdef _WIN32
     jmp_buf env;
@@ -336,6 +338,7 @@ static inline void baro__context_create(
     context->subtest_max_size = 0;
     context->should_reenter_subtest = 0;
     context->subtest_entered = 0;
+    context->escaped_subtest = NULL;
 
     context->suppress_stdout = 1;
     context->real_stdout = -1;
@@ -479,9 +482,21 @@ static inline void baro__register_test(void (*func)(void), const struct baro__ta
     baro__register_test_kind(func, tag, 0);
 }
 
+void baro__subtest_error(struct baro__tag const *tag, char const *message);
+
 static inline int baro__check_subtest(
         struct baro__tag const * const tag) {
-    if (baro__tag_list_size(&baro__c.subtest_stack) < baro__c.subtest_max_size) {
+    size_t const depth = baro__tag_list_size(&baro__c.subtest_stack);
+    if (depth < baro__c.subtest_max_size) {
+        // A traversal enters one subtest per depth, and its slot is not reused
+        // until the next traversal. Meeting that subtest again (from a loop or
+        // a repeated helper call) means every later visit is silently skipped.
+        if (baro__c.subtest_stack.tags[depth] == tag) {
+            baro__subtest_error(tag, "subtest reached more than once in a traversal; "
+                                     "later visits do not run");
+            return 0;
+        }
+
         baro__c.should_reenter_subtest = 1;
         return 0;
     }
@@ -498,8 +513,18 @@ static inline int baro__check_subtest(
     return 1;
 }
 
-static inline void baro__exit_subtest(void) {
+static inline void baro__exit_subtest(
+        struct baro__tag const * const tag) {
     if (baro__c.subtest_entered) {
+        // Anything still above this subtest was left by break or goto.
+        while (baro__c.subtest_stack.size > 1 &&
+               baro__c.subtest_stack.tags[baro__c.subtest_stack.size - 1] != tag) {
+            if (!baro__c.escaped_subtest) {
+                baro__c.escaped_subtest = baro__c.subtest_stack.tags[baro__c.subtest_stack.size - 1];
+            }
+            baro__tag_list_pop(&baro__c.subtest_stack, NULL);
+        }
+
         if (!baro__c.should_reenter_subtest) {
             baro__hash_set_add(&baro__c.passed_subtests, baro__tag_list_hash(&baro__c.subtest_stack));
         }
@@ -900,7 +925,7 @@ do { (void)(lhs); (void)(rhs); (void)(element_size); (void)(element_count); (voi
     if (BARO__CONCAT(baro__enter_subtest_, counter)) goto BARO__CONCAT(baro__subtest_, counter);                             \
     while (BARO__CONCAT(baro__enter_subtest_, counter))                                                                      \
         if (1) {                                                                                                             \
-            baro__exit_subtest();                                                                                            \
+            baro__exit_subtest(&BARO__CONCAT(baro__subtest_tag_, counter));                                                  \
             break;                                                                                                           \
         } else                                                                                                               \
             BARO__CONCAT(baro__subtest_, counter) :
