@@ -36,7 +36,12 @@ if(BARO_EMULATOR_COUNT GREATER 0)
 endif()
 _baro_code_quote(exe "${BARO_EXECUTABLE}")
 string(APPEND test_command " ${exe}")
-string(APPEND command " -- ${test_command}")
+# The separator keeps a path containing "=" from being read as an assignment,
+# but cmake -E env only accepts it from CMake 3.24.
+if(NOT CMAKE_VERSION VERSION_LESS 3.24)
+    string(APPEND command " --")
+endif()
+string(APPEND command " ${test_command}")
 _baro_code_quote(directory "${BARO_WORKING_DIRECTORY}")
 cmake_language(EVAL CODE "execute_process(COMMAND ${command} --list-tests-json --allow-empty
     WORKING_DIRECTORY ${directory} TIMEOUT ${BARO_DISCOVERY_TIMEOUT}
