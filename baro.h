@@ -609,7 +609,6 @@ static inline void baro__assert1(
     char const * const op = (expected_value == BARO__EXPECTING_TRUE ? " != 0" : " == 0");
     printf(BARO__RED "%s failed:%s\n" BARO__UNSET_COLOR, assert_type, desc);
     printf("    %s%s\n", value_str, op);
-    printf("==> %zu%s\n", value, op);
     baro__report_location(file_path, line_num);
 
     baro__assert_failed(type, 1);
@@ -785,10 +784,34 @@ static inline void baro__assert_arr(
     baro__assert_failed(type, 1);
 }
 
-void baro__typed_int(intmax_t lhs, intmax_t rhs, int hard, const char *file, int line);
-void baro__typed_uint(uintmax_t lhs, uintmax_t rhs, int hard, const char *file, int line);
-void baro__typed_ptr(const void *lhs, const void *rhs, int hard, const char *file, int line);
-void baro__typed_double(double lhs, double rhs, int hard, const char *file, int line);
+void baro__typed_int(enum baro__assert_cond cond, intmax_t lhs, const char *lhs_str,
+                     intmax_t rhs, const char *rhs_str, int hard, const char *file, int line);
+void baro__typed_uint(enum baro__assert_cond cond, uintmax_t lhs, const char *lhs_str,
+                      uintmax_t rhs, const char *rhs_str, int hard, const char *file, int line);
+void baro__typed_ptr(enum baro__assert_cond cond, const void *lhs, const char *lhs_str,
+                     const void *rhs, const char *rhs_str, int hard, const char *file, int line);
+void baro__typed_double(enum baro__assert_cond cond, double lhs, const char *lhs_str,
+                        double rhs, const char *rhs_str, int hard, const char *file, int line);
+
+// How baro__assert_values reads the operands captured by a generic comparison.
+enum baro__value_kind {
+    BARO__VALUE_NONE,
+    BARO__VALUE_INT,
+    BARO__VALUE_UINT,
+    BARO__VALUE_LONG,
+    BARO__VALUE_ULONG,
+    BARO__VALUE_LLONG,
+    BARO__VALUE_ULLONG,
+    BARO__VALUE_FLOAT,
+    BARO__VALUE_DOUBLE,
+    BARO__VALUE_LDOUBLE,
+    // A pointer, or a scalar type with no formatter, which is not displayed.
+    BARO__VALUE_OTHER,
+};
+void baro__assert_values(enum baro__assert_cond cond, int passed, enum baro__value_kind kind,
+                         const void *lhs, const void *rhs, int pointer,
+                         const char *lhs_str, const char *rhs_str, enum baro__assert_type type,
+                         const char *desc, const char *file, int line);
 void baro__near(double lhs, double rhs, double absolute, double relative,
                 int hard, const char *file, int line);
 // Turn the regular assert.h assert() into a baro assertion. This is a
@@ -905,41 +928,87 @@ do { (void)(lhs); (void)(rhs); (void)(element_size); (void)(element_count); (voi
 #define BARO__REQUIRE_FALSE1(cond) baro__assert1(((cond) != 0), #cond, BARO__EXPECTING_FALSE, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
 #define BARO__REQUIRE_FALSE2(cond, desc) baro__assert1(((cond) != 0), #cond, BARO__EXPECTING_FALSE, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
 
-#define BARO__CHECK_EQ1(lhs, rhs) baro__assert2(BARO__ASSERT_EQ, ((lhs) == (rhs)), #lhs, #rhs, 0, "", __FILE__, __LINE__)
-#define BARO__CHECK_EQ2(lhs, rhs, desc) baro__assert2(BARO__ASSERT_EQ, ((lhs) == (rhs)), #lhs, #rhs, 0, " " desc, __FILE__, __LINE__)
+// Generic comparisons also display both values when the compiler can capture
+// each operand once and select a formatter by type (C11 _Generic). Both
+// operands are captured in the type C itself converts them to for the
+// comparison, which is the type of a conditional expression over the two, so
+// the result is unchanged. C99 mode keeps the expression-only diagnostic.
+#if defined(BARO_ENABLE) && defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 5)
+// Unlike typeof, an inferred type never evaluates its initializer twice, even
+// for the variably modified types these compilers support.
+#define BARO__CAPTURE_LHS(lhs, rhs) __extension__ __auto_type baro__lhs = 1 ? (lhs) : (rhs)
+#define BARO__CAPTURE_RHS(lhs, rhs) __extension__ __auto_type baro__rhs = 0 ? (lhs) : (rhs)
+#define BARO__IS_POINTER(x) (__builtin_classify_type(x) == 5)
+#elif __STDC_VERSION__ >= 202311L
+#define BARO__CAPTURE_LHS(lhs, rhs) auto baro__lhs = 1 ? (lhs) : (rhs)
+#define BARO__CAPTURE_RHS(lhs, rhs) auto baro__rhs = 0 ? (lhs) : (rhs)
+#elif defined(_MSC_VER) && _MSC_VER >= 1939
+#define BARO__CAPTURE_LHS(lhs, rhs) __typeof__(0 ? (lhs) : (rhs)) baro__lhs = (lhs)
+#define BARO__CAPTURE_RHS(lhs, rhs) __typeof__(baro__lhs) baro__rhs = (rhs)
+#endif
+// Without a type query, assume that an unlisted scalar of pointer size is one.
+#if defined(BARO__CAPTURE_LHS) && !defined(BARO__IS_POINTER)
+#define BARO__IS_POINTER(x) (sizeof(x) == sizeof(void *))
+#endif
+#endif
 
-#define BARO__REQUIRE_EQ1(lhs, rhs) baro__assert2(BARO__ASSERT_EQ, ((lhs) == (rhs)), #lhs, #rhs, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE_EQ2(lhs, rhs, desc) baro__assert2(BARO__ASSERT_EQ, ((lhs) == (rhs)), #lhs, #rhs, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
+#ifdef BARO__CAPTURE_LHS
+// Operands are promoted before they are compared, so narrower types never occur.
+#define BARO__VALUE_KIND(x) _Generic((x),                                             \
+    int: BARO__VALUE_INT, unsigned: BARO__VALUE_UINT,                                 \
+    long: BARO__VALUE_LONG, unsigned long: BARO__VALUE_ULONG,                         \
+    long long: BARO__VALUE_LLONG, unsigned long long: BARO__VALUE_ULLONG,             \
+    float: BARO__VALUE_FLOAT, double: BARO__VALUE_DOUBLE,                             \
+    long double: BARO__VALUE_LDOUBLE, default: BARO__VALUE_OTHER)
+#define BARO__COMPARE(cond, op, lhs, lhs_str, rhs, rhs_str, type, desc) do {          \
+    BARO__CAPTURE_LHS(lhs, rhs);                                                      \
+    BARO__CAPTURE_RHS(lhs, rhs);                                                      \
+    baro__assert_values(cond, baro__lhs op baro__rhs, BARO__VALUE_KIND(baro__lhs),    \
+                        &baro__lhs, &baro__rhs, BARO__IS_POINTER(baro__lhs),          \
+                        lhs_str, rhs_str, type, desc, __FILE__, __LINE__);            \
+} while (0)
+#else
+#define BARO__COMPARE(cond, op, lhs, lhs_str, rhs, rhs_str, type, desc) do {          \
+    baro__assert2(cond, ((lhs) op (rhs)), lhs_str, rhs_str, type, desc, __FILE__, __LINE__); \
+} while (0)
+#endif
 
-#define BARO__CHECK_NE1(lhs, rhs) baro__assert2(BARO__ASSERT_NE, ((lhs) != (rhs)), #lhs, #rhs, 0, "", __FILE__, __LINE__)
-#define BARO__CHECK_NE2(lhs, rhs, desc) baro__assert2(BARO__ASSERT_NE, ((lhs) != (rhs)), #lhs, #rhs, 0, " " desc, __FILE__, __LINE__)
+#define BARO__CHECK_EQ1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_EQ, ==, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, "")
+#define BARO__CHECK_EQ2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_EQ, ==, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, " " desc)
 
-#define BARO__REQUIRE_NE1(lhs, rhs) baro__assert2(BARO__ASSERT_NE, ((lhs) != (rhs)), #lhs, #rhs, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE_NE2(lhs, rhs, desc) baro__assert2(BARO__ASSERT_NE, ((lhs) != (rhs)), #lhs, #rhs, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
+#define BARO__REQUIRE_EQ1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_EQ, ==, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, "")
+#define BARO__REQUIRE_EQ2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_EQ, ==, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, " " desc)
 
-#define BARO__CHECK_LT1(lhs, rhs) baro__assert2(BARO__ASSERT_LT, ((lhs) < (rhs)), #lhs, #rhs, 0, "", __FILE__, __LINE__)
-#define BARO__CHECK_LT2(lhs, rhs, desc) baro__assert2(BARO__ASSERT_LT, ((lhs) < (rhs)), #lhs, #rhs, 0, " " desc, __FILE__, __LINE__)
+#define BARO__CHECK_NE1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_NE, !=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, "")
+#define BARO__CHECK_NE2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_NE, !=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, " " desc)
 
-#define BARO__REQUIRE_LT1(lhs, rhs) baro__assert2(BARO__ASSERT_LT, ((lhs) < (rhs)), #lhs, #rhs, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE_LT2(lhs, rhs, desc) baro__assert2(BARO__ASSERT_LT, ((lhs) < (rhs)), #lhs, #rhs, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
+#define BARO__REQUIRE_NE1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_NE, !=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, "")
+#define BARO__REQUIRE_NE2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_NE, !=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, " " desc)
 
-#define BARO__CHECK_LE1(lhs, rhs) baro__assert2(BARO__ASSERT_LE, ((lhs) <= (rhs)), #lhs, #rhs, 0, "", __FILE__, __LINE__)
-#define BARO__CHECK_LE2(lhs, rhs, desc) baro__assert2(BARO__ASSERT_LE, ((lhs) <= (rhs)), #lhs, #rhs, 0, " " desc, __FILE__, __LINE__)
+#define BARO__CHECK_LT1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_LT, <, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, "")
+#define BARO__CHECK_LT2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_LT, <, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, " " desc)
 
-#define BARO__REQUIRE_LE1(lhs, rhs) baro__assert2(BARO__ASSERT_LE, ((lhs) <= (rhs)), #lhs, #rhs, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE_LE2(lhs, rhs, desc) baro__assert2(BARO__ASSERT_LE, ((lhs) <= (rhs)), #lhs, #rhs, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
+#define BARO__REQUIRE_LT1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_LT, <, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, "")
+#define BARO__REQUIRE_LT2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_LT, <, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, " " desc)
 
-#define BARO__CHECK_GT1(lhs, rhs) baro__assert2(BARO__ASSERT_GT, ((lhs) > (rhs)), #lhs, #rhs, 0, "", __FILE__, __LINE__)
-#define BARO__CHECK_GT2(lhs, rhs, desc) baro__assert2(BARO__ASSERT_GT, ((lhs) > (rhs)), #lhs, #rhs, 0, " " desc, __FILE__, __LINE__)
+#define BARO__CHECK_LE1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_LE, <=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, "")
+#define BARO__CHECK_LE2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_LE, <=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, " " desc)
 
-#define BARO__REQUIRE_GT1(lhs, rhs) baro__assert2(BARO__ASSERT_GT, ((lhs) > (rhs)), #lhs, #rhs, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE_GT2(lhs, rhs, desc) baro__assert2(BARO__ASSERT_GT, ((lhs) > (rhs)), #lhs, #rhs, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
+#define BARO__REQUIRE_LE1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_LE, <=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, "")
+#define BARO__REQUIRE_LE2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_LE, <=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, " " desc)
 
-#define BARO__CHECK_GE1(lhs, rhs) baro__assert2(BARO__ASSERT_GE, ((lhs) >= (rhs)), #lhs, #rhs, 0, "", __FILE__, __LINE__)
-#define BARO__CHECK_GE2(lhs, rhs, desc) baro__assert2(BARO__ASSERT_GE, ((lhs) >= (rhs)), #lhs, #rhs, 0, " " desc, __FILE__, __LINE__)
+#define BARO__CHECK_GT1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_GT, >, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, "")
+#define BARO__CHECK_GT2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_GT, >, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, " " desc)
 
-#define BARO__REQUIRE_GE1(lhs, rhs) baro__assert2(BARO__ASSERT_GE, ((lhs) >= (rhs)), #lhs, #rhs, BARO__ASSERT_REQUIRE, "", __FILE__, __LINE__)
-#define BARO__REQUIRE_GE2(lhs, rhs, desc) baro__assert2(BARO__ASSERT_GE, ((lhs) >= (rhs)), #lhs, #rhs, BARO__ASSERT_REQUIRE, " " desc, __FILE__, __LINE__)
+#define BARO__REQUIRE_GT1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_GT, >, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, "")
+#define BARO__REQUIRE_GT2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_GT, >, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, " " desc)
+
+#define BARO__CHECK_GE1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_GE, >=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, "")
+#define BARO__CHECK_GE2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_GE, >=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_CHECK, " " desc)
+
+#define BARO__REQUIRE_GE1(lhs, rhs) BARO__COMPARE(BARO__ASSERT_GE, >=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, "")
+#define BARO__REQUIRE_GE2(lhs, rhs, desc) BARO__COMPARE(BARO__ASSERT_GE, >=, lhs, #lhs, rhs, #rhs, BARO__ASSERT_REQUIRE, " " desc)
 
 #define BARO__CHECK_STR_EQ2(lhs, rhs) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_TRUE, BARO__CASE_SENSITIVE, 0, "", __FILE__, __LINE__)
 #define BARO__CHECK_STR_EQ3(lhs, rhs, desc) baro__assert_str(lhs, #lhs, rhs, #rhs, BARO__EXPECTING_TRUE, BARO__CASE_SENSITIVE, 0, " " desc, __FILE__, __LINE__)
@@ -1108,20 +1177,53 @@ BARO__X((__VA_ARGS__))
 
 // Typed assertions deliberately convert operands to the named type.
 #ifdef BARO_ENABLE
-#define BARO__TYPED(kind, a, b, hard) baro__typed_##kind((a), (b), hard, __FILE__, __LINE__)
+#define BARO__TYPED(kind, cond, a, a_str, b, b_str, hard) \
+    baro__typed_##kind(BARO__ASSERT_##cond, (a), a_str, (b), b_str, hard, __FILE__, __LINE__)
 #define BARO__NEAR(a, b, abs_tol, rel_tol, hard) baro__near((a), (b), (abs_tol), (rel_tol), hard, __FILE__, __LINE__)
 #else
-#define BARO__TYPED(kind, a, b, hard) do { (void)(a); (void)(b); } while (0)
+#define BARO__TYPED(kind, cond, a, a_str, b, b_str, hard) do { (void)(a); (void)(b); } while (0)
 #define BARO__NEAR(a, b, abs_tol, rel_tol, hard) do { (void)(a); (void)(b); (void)(abs_tol); (void)(rel_tol); } while (0)
 #endif
-#define BARO_CHECK_INT_EQ(a, b) BARO__TYPED(int, a, b, 0)
-#define BARO_REQUIRE_INT_EQ(a, b) BARO__TYPED(int, a, b, 1)
-#define BARO_CHECK_UINT_EQ(a, b) BARO__TYPED(uint, a, b, 0)
-#define BARO_REQUIRE_UINT_EQ(a, b) BARO__TYPED(uint, a, b, 1)
-#define BARO_CHECK_PTR_EQ(a, b) BARO__TYPED(ptr, a, b, 0)
-#define BARO_REQUIRE_PTR_EQ(a, b) BARO__TYPED(ptr, a, b, 1)
-#define BARO_CHECK_DOUBLE_EQ(a, b) BARO__TYPED(double, a, b, 0)
-#define BARO_REQUIRE_DOUBLE_EQ(a, b) BARO__TYPED(double, a, b, 1)
+#define BARO_CHECK_INT_EQ(a, b) BARO__TYPED(int, EQ, a, #a, b, #b, 0)
+#define BARO_REQUIRE_INT_EQ(a, b) BARO__TYPED(int, EQ, a, #a, b, #b, 1)
+#define BARO_CHECK_INT_NE(a, b) BARO__TYPED(int, NE, a, #a, b, #b, 0)
+#define BARO_REQUIRE_INT_NE(a, b) BARO__TYPED(int, NE, a, #a, b, #b, 1)
+#define BARO_CHECK_INT_LT(a, b) BARO__TYPED(int, LT, a, #a, b, #b, 0)
+#define BARO_REQUIRE_INT_LT(a, b) BARO__TYPED(int, LT, a, #a, b, #b, 1)
+#define BARO_CHECK_INT_LE(a, b) BARO__TYPED(int, LE, a, #a, b, #b, 0)
+#define BARO_REQUIRE_INT_LE(a, b) BARO__TYPED(int, LE, a, #a, b, #b, 1)
+#define BARO_CHECK_INT_GT(a, b) BARO__TYPED(int, GT, a, #a, b, #b, 0)
+#define BARO_REQUIRE_INT_GT(a, b) BARO__TYPED(int, GT, a, #a, b, #b, 1)
+#define BARO_CHECK_INT_GE(a, b) BARO__TYPED(int, GE, a, #a, b, #b, 0)
+#define BARO_REQUIRE_INT_GE(a, b) BARO__TYPED(int, GE, a, #a, b, #b, 1)
+#define BARO_CHECK_UINT_EQ(a, b) BARO__TYPED(uint, EQ, a, #a, b, #b, 0)
+#define BARO_REQUIRE_UINT_EQ(a, b) BARO__TYPED(uint, EQ, a, #a, b, #b, 1)
+#define BARO_CHECK_UINT_NE(a, b) BARO__TYPED(uint, NE, a, #a, b, #b, 0)
+#define BARO_REQUIRE_UINT_NE(a, b) BARO__TYPED(uint, NE, a, #a, b, #b, 1)
+#define BARO_CHECK_UINT_LT(a, b) BARO__TYPED(uint, LT, a, #a, b, #b, 0)
+#define BARO_REQUIRE_UINT_LT(a, b) BARO__TYPED(uint, LT, a, #a, b, #b, 1)
+#define BARO_CHECK_UINT_LE(a, b) BARO__TYPED(uint, LE, a, #a, b, #b, 0)
+#define BARO_REQUIRE_UINT_LE(a, b) BARO__TYPED(uint, LE, a, #a, b, #b, 1)
+#define BARO_CHECK_UINT_GT(a, b) BARO__TYPED(uint, GT, a, #a, b, #b, 0)
+#define BARO_REQUIRE_UINT_GT(a, b) BARO__TYPED(uint, GT, a, #a, b, #b, 1)
+#define BARO_CHECK_UINT_GE(a, b) BARO__TYPED(uint, GE, a, #a, b, #b, 0)
+#define BARO_REQUIRE_UINT_GE(a, b) BARO__TYPED(uint, GE, a, #a, b, #b, 1)
+#define BARO_CHECK_PTR_EQ(a, b) BARO__TYPED(ptr, EQ, a, #a, b, #b, 0)
+#define BARO_REQUIRE_PTR_EQ(a, b) BARO__TYPED(ptr, EQ, a, #a, b, #b, 1)
+#define BARO_CHECK_PTR_NE(a, b) BARO__TYPED(ptr, NE, a, #a, b, #b, 0)
+#define BARO_REQUIRE_PTR_NE(a, b) BARO__TYPED(ptr, NE, a, #a, b, #b, 1)
+#define BARO_CHECK_DOUBLE_EQ(a, b) BARO__TYPED(double, EQ, a, #a, b, #b, 0)
+#define BARO_REQUIRE_DOUBLE_EQ(a, b) BARO__TYPED(double, EQ, a, #a, b, #b, 1)
+#define BARO_CHECK_DOUBLE_NE(a, b) BARO__TYPED(double, NE, a, #a, b, #b, 0)
+#define BARO_REQUIRE_DOUBLE_NE(a, b) BARO__TYPED(double, NE, a, #a, b, #b, 1)
+#define BARO_CHECK_DOUBLE_LT(a, b) BARO__TYPED(double, LT, a, #a, b, #b, 0)
+#define BARO_REQUIRE_DOUBLE_LT(a, b) BARO__TYPED(double, LT, a, #a, b, #b, 1)
+#define BARO_CHECK_DOUBLE_LE(a, b) BARO__TYPED(double, LE, a, #a, b, #b, 0)
+#define BARO_REQUIRE_DOUBLE_LE(a, b) BARO__TYPED(double, LE, a, #a, b, #b, 1)
+#define BARO_CHECK_DOUBLE_GT(a, b) BARO__TYPED(double, GT, a, #a, b, #b, 0)
+#define BARO_REQUIRE_DOUBLE_GT(a, b) BARO__TYPED(double, GT, a, #a, b, #b, 1)
+#define BARO_CHECK_DOUBLE_GE(a, b) BARO__TYPED(double, GE, a, #a, b, #b, 0)
+#define BARO_REQUIRE_DOUBLE_GE(a, b) BARO__TYPED(double, GE, a, #a, b, #b, 1)
 #define BARO_CHECK_NEAR(a, b, abs_tol, rel_tol) BARO__NEAR(a, b, abs_tol, rel_tol, 0)
 #define BARO_REQUIRE_NEAR(a, b, abs_tol, rel_tol) BARO__NEAR(a, b, abs_tol, rel_tol, 1)
 // ARR compares object representations; BYTES makes that intent explicit.
@@ -1129,13 +1231,45 @@ BARO__X((__VA_ARGS__))
 #define BARO_REQUIRE_BYTES_EQ(a, b, n) BARO_REQUIRE_ARR_EQ((const uint8_t *)(a), (const uint8_t *)(b), n)
 #ifndef BARO_NO_SHORT
 #define CHECK_INT_EQ BARO_CHECK_INT_EQ
-#define CHECK_UINT_EQ BARO_CHECK_UINT_EQ
-#define CHECK_PTR_EQ BARO_CHECK_PTR_EQ
-#define CHECK_DOUBLE_EQ BARO_CHECK_DOUBLE_EQ
 #define REQUIRE_INT_EQ BARO_REQUIRE_INT_EQ
+#define CHECK_INT_NE BARO_CHECK_INT_NE
+#define REQUIRE_INT_NE BARO_REQUIRE_INT_NE
+#define CHECK_INT_LT BARO_CHECK_INT_LT
+#define REQUIRE_INT_LT BARO_REQUIRE_INT_LT
+#define CHECK_INT_LE BARO_CHECK_INT_LE
+#define REQUIRE_INT_LE BARO_REQUIRE_INT_LE
+#define CHECK_INT_GT BARO_CHECK_INT_GT
+#define REQUIRE_INT_GT BARO_REQUIRE_INT_GT
+#define CHECK_INT_GE BARO_CHECK_INT_GE
+#define REQUIRE_INT_GE BARO_REQUIRE_INT_GE
+#define CHECK_UINT_EQ BARO_CHECK_UINT_EQ
 #define REQUIRE_UINT_EQ BARO_REQUIRE_UINT_EQ
+#define CHECK_UINT_NE BARO_CHECK_UINT_NE
+#define REQUIRE_UINT_NE BARO_REQUIRE_UINT_NE
+#define CHECK_UINT_LT BARO_CHECK_UINT_LT
+#define REQUIRE_UINT_LT BARO_REQUIRE_UINT_LT
+#define CHECK_UINT_LE BARO_CHECK_UINT_LE
+#define REQUIRE_UINT_LE BARO_REQUIRE_UINT_LE
+#define CHECK_UINT_GT BARO_CHECK_UINT_GT
+#define REQUIRE_UINT_GT BARO_REQUIRE_UINT_GT
+#define CHECK_UINT_GE BARO_CHECK_UINT_GE
+#define REQUIRE_UINT_GE BARO_REQUIRE_UINT_GE
+#define CHECK_PTR_EQ BARO_CHECK_PTR_EQ
 #define REQUIRE_PTR_EQ BARO_REQUIRE_PTR_EQ
+#define CHECK_PTR_NE BARO_CHECK_PTR_NE
+#define REQUIRE_PTR_NE BARO_REQUIRE_PTR_NE
+#define CHECK_DOUBLE_EQ BARO_CHECK_DOUBLE_EQ
 #define REQUIRE_DOUBLE_EQ BARO_REQUIRE_DOUBLE_EQ
+#define CHECK_DOUBLE_NE BARO_CHECK_DOUBLE_NE
+#define REQUIRE_DOUBLE_NE BARO_REQUIRE_DOUBLE_NE
+#define CHECK_DOUBLE_LT BARO_CHECK_DOUBLE_LT
+#define REQUIRE_DOUBLE_LT BARO_REQUIRE_DOUBLE_LT
+#define CHECK_DOUBLE_LE BARO_CHECK_DOUBLE_LE
+#define REQUIRE_DOUBLE_LE BARO_REQUIRE_DOUBLE_LE
+#define CHECK_DOUBLE_GT BARO_CHECK_DOUBLE_GT
+#define REQUIRE_DOUBLE_GT BARO_REQUIRE_DOUBLE_GT
+#define CHECK_DOUBLE_GE BARO_CHECK_DOUBLE_GE
+#define REQUIRE_DOUBLE_GE BARO_REQUIRE_DOUBLE_GE
 #define CHECK_NEAR BARO_CHECK_NEAR
 #define REQUIRE_NEAR BARO_REQUIRE_NEAR
 #define CHECK_BYTES_EQ BARO_CHECK_BYTES_EQ

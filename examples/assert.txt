@@ -2,7 +2,6 @@ Running 3 out of 3 tests (of 3 total)
 ============================================================
 Require failed: Assertion failed (1 == 2)
     1 == 2 != 0
-==> 0 != 0
 At assert.c:10
   In: overridden assert (assert.c:8)
 ============================================================
@@ -11,7 +10,6 @@ Assertion failed! Caught SIGABRT
 ============================================================
 Require failed:
     1 == 2 != 0
-==> 0 != 0
 At assert.c:23
   In: some other test (assert.c:22)
 ============================================================

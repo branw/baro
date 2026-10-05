@@ -3,13 +3,11 @@ Running 2 out of 10 tests (of 10 total)
 ============================================================
 Require failed:
     0 != 0
-==> 0 != 0
 At partitioning.c:14
   In: 3 (partitioning.c:14)
 ============================================================
 Require failed:
     0 != 0
-==> 0 != 0
 At partitioning.c:15
   In: 4 (partitioning.c:15)
 ============================================================

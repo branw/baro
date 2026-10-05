@@ -652,29 +652,109 @@ static void baro__typed_failure(int hard, const char *file, int line, const char
     baro__report_location(file, line);
     baro__assert_failed(hard ? BARO__ASSERT_REQUIRE : BARO__ASSERT_CHECK, 1);
 }
-void baro__typed_int(intmax_t a, intmax_t b, int hard, const char *file, int line) {
-    baro__c.num_asserts++;
-    if (a == b) return;
-    char text[160]; snprintf(text, sizeof(text), "%" PRIdMAX " == %" PRIdMAX, a, b);
-    baro__typed_failure(hard, file, line, text);
+static const char *baro__operator(enum baro__assert_cond cond) {
+    return cond == BARO__ASSERT_EQ ? "==" : cond == BARO__ASSERT_NE ? "!=" :
+           cond == BARO__ASSERT_LT ? "<" : cond == BARO__ASSERT_LE ? "<=" :
+           cond == BARO__ASSERT_GT ? ">" : ">=";
 }
-void baro__typed_uint(uintmax_t a, uintmax_t b, int hard, const char *file, int line) {
-    baro__c.num_asserts++;
-    if (a == b) return;
-    char text[160]; snprintf(text, sizeof(text), "%" PRIuMAX " == %" PRIuMAX, a, b);
-    baro__typed_failure(hard, file, line, text);
+// Same layout as the string assertions: the source expression, then its values.
+static void baro__values_failed(enum baro__assert_cond cond, const char *lhs_str, const char *rhs_str,
+                                const char *lhs_value, const char *rhs_value,
+                                enum baro__assert_type type, const char *desc,
+                                const char *file, int line) {
+    baro__failure_pending = 1;
+    baro__c.current_test_failed = 1;
+    baro__c.num_asserts_failed++;
+    baro__redirect_output(&baro__c, 0);
+    const char *op = baro__operator(cond);
+    printf(BARO__RED "%s failed:%s\n" BARO__UNSET_COLOR,
+           type == BARO__ASSERT_REQUIRE ? "Require" : "Check", desc);
+    printf("    %s %s %s\n", lhs_str, op, rhs_str);
+    if (lhs_value) printf("==> %s %s %s\n", lhs_value, op, rhs_value);
+    baro__report_location(file, line);
+    baro__assert_failed(type, 1);
 }
-void baro__typed_ptr(const void *a, const void *b, int hard, const char *file, int line) {
+
+#define BARO__HOLDS(cond, a, b) \
+    ((cond) == BARO__ASSERT_EQ ? (a) == (b) : (cond) == BARO__ASSERT_NE ? (a) != (b) : \
+     (cond) == BARO__ASSERT_LT ? (a) < (b) : (cond) == BARO__ASSERT_LE ? (a) <= (b) : \
+     (cond) == BARO__ASSERT_GT ? (a) > (b) : (a) >= (b))
+#define BARO__TYPED_FAILED(format) do { \
+    char lhs[64], rhs[64]; \
+    snprintf(lhs, sizeof(lhs), format, a); \
+    snprintf(rhs, sizeof(rhs), format, b); \
+    baro__values_failed(cond, a_str, b_str, lhs, rhs, \
+                        hard ? BARO__ASSERT_REQUIRE : BARO__ASSERT_CHECK, "", file, line); \
+} while (0)
+void baro__typed_int(enum baro__assert_cond cond, intmax_t a, const char *a_str,
+                     intmax_t b, const char *b_str, int hard, const char *file, int line) {
     baro__c.num_asserts++;
-    if (a == b) return;
-    char text[160]; snprintf(text, sizeof(text), "%p == %p", (void *)a, (void *)b);
-    baro__typed_failure(hard, file, line, text);
+    if (BARO__HOLDS(cond, a, b)) return;
+    BARO__TYPED_FAILED("%" PRIdMAX);
 }
-void baro__typed_double(double a, double b, int hard, const char *file, int line) {
+void baro__typed_uint(enum baro__assert_cond cond, uintmax_t a, const char *a_str,
+                      uintmax_t b, const char *b_str, int hard, const char *file, int line) {
     baro__c.num_asserts++;
-    if (a == b) return;
-    char text[160]; snprintf(text, sizeof(text), "%.17g == %.17g", a, b);
-    baro__typed_failure(hard, file, line, text);
+    if (BARO__HOLDS(cond, a, b)) return;
+    BARO__TYPED_FAILED("%" PRIuMAX);
+}
+// Only equality is offered: ordering unrelated pointers is undefined.
+void baro__typed_ptr(enum baro__assert_cond cond, const void *a, const char *a_str,
+                     const void *b, const char *b_str, int hard, const char *file, int line) {
+    baro__c.num_asserts++;
+    if ((a == b) == (cond == BARO__ASSERT_EQ)) return;
+    BARO__TYPED_FAILED("%p");
+}
+void baro__typed_double(enum baro__assert_cond cond, double a, const char *a_str,
+                        double b, const char *b_str, int hard, const char *file, int line) {
+    baro__c.num_asserts++;
+    if (BARO__HOLDS(cond, a, b)) return;
+    BARO__TYPED_FAILED("%.17g");
+}
+
+static int baro__format_value(char *text, size_t capacity, enum baro__value_kind kind,
+                              const void *value, int pointer) {
+#define BARO__FORMAT(kind, type, format) case kind: { \
+    type typed; \
+    memcpy(&typed, value, sizeof(typed)); \
+    snprintf(text, capacity, format, typed); \
+    return 1; \
+}
+    switch (kind) {
+    BARO__FORMAT(BARO__VALUE_INT, int, "%d")
+    BARO__FORMAT(BARO__VALUE_UINT, unsigned, "%u")
+    BARO__FORMAT(BARO__VALUE_LONG, long, "%ld")
+    BARO__FORMAT(BARO__VALUE_ULONG, unsigned long, "%lu")
+    BARO__FORMAT(BARO__VALUE_LLONG, long long, "%lld")
+    BARO__FORMAT(BARO__VALUE_ULLONG, unsigned long long, "%llu")
+    BARO__FORMAT(BARO__VALUE_FLOAT, float, "%.9g")
+    BARO__FORMAT(BARO__VALUE_DOUBLE, double, "%.17g")
+    BARO__FORMAT(BARO__VALUE_LDOUBLE, long double, "%.21Lg")
+    case BARO__VALUE_OTHER:
+        if (pointer) {
+            void *address;
+            memcpy(&address, value, sizeof(address));
+            snprintf(text, capacity, "%p", address);
+            return 1;
+        }
+        break;
+    case BARO__VALUE_NONE:
+        break;
+    }
+#undef BARO__FORMAT
+    return 0;
+}
+// The caller compares the operands in their own type; this only reports them.
+void baro__assert_values(enum baro__assert_cond cond, int passed, enum baro__value_kind kind,
+                         const void *lhs, const void *rhs, int pointer,
+                         const char *lhs_str, const char *rhs_str, enum baro__assert_type type,
+                         const char *desc, const char *file, int line) {
+    baro__c.num_asserts++;
+    if (passed) return;
+    char lhs_value[64], rhs_value[64];
+    int shown = baro__format_value(lhs_value, sizeof(lhs_value), kind, lhs, pointer) &&
+                baro__format_value(rhs_value, sizeof(rhs_value), kind, rhs, pointer);
+    baro__values_failed(cond, lhs_str, rhs_str, shown ? lhs_value : NULL, rhs_value, type, desc, file, line);
 }
 void baro__near(double a, double b, double absolute, double relative,
                 int hard, const char *file, int line) {

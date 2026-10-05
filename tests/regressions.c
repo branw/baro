@@ -155,6 +155,38 @@ TEST("[typed_fail] <diagnostics> & \"escaping\"") {
     fprintf(stderr, "UNREACHABLE\n");
 }
 
+TEST("[typed_ops] every typed operator") {
+    int n = 0;
+    CHECK_INT_NE(n++, 1);
+    CHECK_INT_EQ(n, 1);
+    REQUIRE_INT_LT(-1, 0);
+    CHECK_INT_LE(-1, -1);
+    CHECK_INT_GT(0, -1);
+    REQUIRE_INT_GE(0, 0);
+    CHECK_UINT_NE(UINT64_MAX, 0);
+    CHECK_UINT_LT(0, UINT64_MAX);
+    CHECK_UINT_LE(1, 1);
+    REQUIRE_UINT_GT(UINT64_MAX, 1);
+    CHECK_UINT_GE(1, 1);
+    CHECK_PTR_NE(&n, NULL);
+    REQUIRE_PTR_NE(&n, NULL);
+    CHECK_DOUBLE_NE(0.5, 0.25);
+    CHECK_DOUBLE_LT(0.25, 0.5);
+    REQUIRE_DOUBLE_LE(0.5, 0.5);
+    CHECK_DOUBLE_GT(0.5, 0.25);
+    CHECK_DOUBLE_GE(0.5, 0.5);
+}
+TEST("[typed_ops_fail] expressions and values") {
+    int n = 3;
+    CHECK_INT_NE(n + 1, 4);
+    CHECK_INT_LT(n, -3);
+    CHECK_UINT_GE(n, UINT64_MAX);
+    CHECK_PTR_NE(NULL, NULL);
+    CHECK_DOUBLE_GT(n / 2.0, 2.5);
+    REQUIRE_INT_LE(n * 2, n);
+    fprintf(stderr, "UNREACHABLE\n");
+}
+
 static int isolated_state;
 TEST("[isolated_state] first") { CHECK_EQ(++isolated_state, 1); }
 TEST("[isolated_state] second") { CHECK_EQ(++isolated_state, 1); }

@@ -63,9 +63,15 @@ registered cleanup, and ends the current top-level test. All assertions must
 execute on the runner thread; worker threads should return results to it.
 
 - `CHECK(expr)` / `CHECK_FALSE(expr)` test truth values.
-- `CHECK_EQ`, `NE`, `LT`, `LE`, `GT`, `GE` preserve C operand types.
-- `CHECK_INT_EQ`, `UINT_EQ`, `PTR_EQ`, `DOUBLE_EQ` convert operands to
-  `intmax_t`, `uintmax_t`, object pointers, or `double`, and display values.
+- `CHECK_EQ`, `NE`, `LT`, `LE`, `GT`, `GE` preserve C operand types. When the
+  test is compiled as C11 or later and `typeof` is available (GCC 5+, Clang,
+  Visual Studio 2022 17.9+ with `/std:c11`, or any C23 compiler), a failure
+  also displays both values, converted as C converts them for the comparison.
+  In C99 mode, including `gnu99`, it displays the expression only.
+- `CHECK_INT_EQ`, `CHECK_UINT_EQ`, `CHECK_DOUBLE_EQ` and their `NE`, `LT`, `LE`,
+  `GT`, `GE` forms convert operands to `intmax_t`, `uintmax_t`, or `double`.
+  `CHECK_PTR_EQ` and `CHECK_PTR_NE` compare object pointers. A failure displays
+  the expression and both values in every language mode.
 - `CHECK_NEAR(a, b, absolute, relative)` accepts either tolerance. Tolerances
   must be finite and nonnegative. NaNs always fail; identical infinities pass;
   other comparisons involving infinity fail. Signed zeros compare equal.
@@ -78,7 +84,8 @@ execute on the runner thread; worker threads should return results to it.
 Each has a `REQUIRE` counterpart and a `BARO_`-prefixed form. Define
 `BARO_NO_SHORT` to omit short names. Generic, string, and array assertions
 accept an optional trailing string-literal description. Typed assertions use
-fixed argument lists. Scalar assertion operands are evaluated once.
+fixed argument lists. Scalar assertion operands are evaluated once. Comparison
+assertions are statements, not expressions.
 
 Standard `assert` is unchanged unless you define `BARO_REPLACE_ASSERT` before
 including `baro.h`; that option replaces it with `BARO_REQUIRE`. Include Baro

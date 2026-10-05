@@ -109,6 +109,28 @@ foreach(case numeric float_failure require output suppression descriptors many
             "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/regression_${case}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_regression.cmake")
 endforeach()
+# The same source is checked in both language modes: C99 reports expressions
+# only, while C11 with typeof also reports the compared values.
+# clang-cl has no C99 mode, so it always takes the C11 path.
+set(baro_clang_cl OFF)
+if(MSVC AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+    set(baro_clang_cl ON)
+endif()
+if(NOT baro_clang_cl)
+    add_executable(baro_values_c99 tests/values.c)
+    target_link_libraries(baro_values_c99 PRIVATE baro::main)
+    add_test(NAME values_c99 COMMAND ${CMAKE_COMMAND}
+        "-DPROGRAM=$<TARGET_FILE:baro_values_c99>" -DVALUES=OFF "-DMSVC=${MSVC}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/values.cmake")
+endif()
+if(NOT MSVC OR baro_clang_cl OR MSVC_VERSION GREATER_EQUAL 1939)
+    add_executable(baro_values_c11 tests/values.c)
+    target_link_libraries(baro_values_c11 PRIVATE baro::main)
+    set_target_properties(baro_values_c11 PROPERTIES C_STANDARD 11)
+    add_test(NAME values_c11 COMMAND ${CMAKE_COMMAND}
+        "-DPROGRAM=$<TARGET_FILE:baro_values_c11>" -DVALUES=ON "-DMSVC=${MSVC}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/values.cmake")
+endif()
 add_executable(baro_disabled tests/disabled.c)
 target_include_directories(baro_disabled PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME disabled_build COMMAND baro_disabled)

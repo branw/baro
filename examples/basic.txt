@@ -2,13 +2,11 @@ Running 7 out of 7 tests (of 7 total)
 ============================================================
 Check failed:
     0 != 0
-==> 0 != 0
 At basic.c:5
   In: check fails soft (basic.c:3)
 ============================================================
 Check failed:
     1 == 0
-==> 1 == 0
 At basic.c:8
   In: check fails soft (basic.c:3)
 ============================================================
@@ -74,7 +72,6 @@ At basic.c:38
 ============================================================
 Require failed:
     0 != 0
-==> 0 != 0
 At basic.c:44
   In: require fails hard (basic.c:41)
 ============================================================
@@ -92,13 +89,11 @@ At basic.c:64
 ============================================================
 Check failed: displays message on check failure
     0 != 0
-==> 0 != 0
 At basic.c:70
   In: fail with message (basic.c:69)
 ============================================================
 Require failed: displays message on require failure
     0 != 0
-==> 0 != 0
 At basic.c:74
   In: fail with message (basic.c:69)
 ============================================================

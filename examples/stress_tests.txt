@@ -2,7 +2,6 @@ Running 2 out of 2 tests (of 2 total)
 ============================================================
 Require failed:
     0 != 0
-==> 0 != 0
 At stress_tests.c:4
   In: Tall, narrow subtest tree (stress_tests.c:3)
     Under: 0 (stress_tests.c:4)
@@ -263,7 +262,6 @@ At stress_tests.c:4
 ============================================================
 Check failed:
     0 != 0
-==> 0 != 0
 At stress_tests.c:327
   In: Short, wide subtest tree (stress_tests.c:7)
     Under: 31999 (stress_tests.c:327)

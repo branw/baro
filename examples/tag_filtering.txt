@@ -2,19 +2,16 @@ Running 3 out of 3 tests (of 4 total)
 ============================================================
 Require failed:
     0 != 0
-==> 0 != 0
 At tag_filtering.c:6
   In: [foo] This test will be ran (tag_filtering.c:5)
 ============================================================
 Require failed:
     0 != 0
-==> 0 != 0
 At tag_filtering.c:10
   In: [bar] This test will also be ran (tag_filtering.c:9)
 ============================================================
 Require failed:
     0 != 0
-==> 0 != 0
 At tag_filtering.c:14
   In: [baz] [foo] And this one... (tag_filtering.c:13)
 ============================================================
