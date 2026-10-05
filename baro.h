@@ -1110,7 +1110,10 @@ baro__assert_arr((uint8_t const *) (lhs), #lhs, (uint8_t const *) (rhs), #rhs, s
 #define BARO__GET3(_1, _2, _3, NAME, ...) NAME
 #define BARO__GET4(_1, _2, _3, _4, NAME, ...) NAME
 
-#ifdef _MSC_VER
+// MSVC's traditional preprocessor passes __VA_ARGS__ on as a single argument,
+// so it needs an extra expansion step. Its conforming preprocessor (selected by
+// /std:c11 and later, or /Zc:preprocessor) and clang-cl take the standard form.
+#if defined(_MSC_VER) && !defined(__clang__) && (!defined(_MSVC_TRADITIONAL) || _MSVC_TRADITIONAL)
 #define BARO__X(x) x
 #define BARO_CHECK(...) BARO__X(BARO__GET2(__VA_ARGS__, BARO__CHECK2, BARO__CHECK1)) \
 BARO__X((__VA_ARGS__))
@@ -1225,7 +1228,7 @@ BARO__X((__VA_ARGS__))
 (__VA_ARGS__)
 #define BARO_REQUIRE_ARR_NE(...) BARO__GET4(__VA_ARGS__, BARO__REQUIRE_ARR_NE4, BARO__REQUIRE_ARR_NE3, , ) \
 (__VA_ARGS__)
-#endif//_MSC_VER
+#endif//traditional MSVC preprocessor
 
 // Typed assertions deliberately convert operands to the named type.
 #ifdef BARO_ENABLE
