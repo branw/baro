@@ -1,4 +1,5 @@
 #include "baro.h"
+#include <stdio.h>
 
 static int compare(int a, int b) { return a - b; }
 

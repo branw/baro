@@ -12,7 +12,8 @@ cmake --build out/coverage --target coverage --parallel 4
 
 The `coverage` target builds the tests, deletes old profiles, runs tests serially,
 and writes HTML, JSON, XML, and text reports under `out/coverage/coverage/`.
-It covers `baro.c`, `baro.h`, `baro_process.h`, `baro_main.c`, and `baro_ctest.c`.
+It covers `baro.c`, `baro_process.h`, `baro_main.c`, and `baro_ctest.c`; `baro.h`
+holds only declarations and macros.
 Nested consumer builds and the redundant multi-configuration integration run are
 not measured. Do not run other tests concurrently in this dedicated build tree.
 Instrumentation is incompatible with `BARO_SANITIZERS`. Set

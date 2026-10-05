@@ -1,4 +1,7 @@
 #include "baro.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #undef NDEBUG
 #include <assert.h>
 #include <signal.h>
@@ -6,6 +9,7 @@
 #include <windows.h>
 #else
 #include <time.h>
+#include <unistd.h>
 #endif
 TEST("[duplicate] same name") { CHECK(1); }
 TEST("[duplicate] same name") { CHECK(0); }

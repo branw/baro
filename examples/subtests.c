@@ -1,5 +1,5 @@
 #include <baro.h>
-
+#include <stdio.h>
 TEST("subtest stack behavior") {
     printf("begin\n");
     SUBTEST("1") {

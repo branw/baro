@@ -26,8 +26,9 @@ cc -std=gnu99 -DBARO_ENABLE -Iext/baro app.c ext/baro/baro.c ext/baro/baro_main.
 ./tests
 ```
 
-Use the POSIX feature environment on Unix (GNU99 supplies it), or MSVC's C
-mode on Windows. Registration uses compiler constructor support: GCC, Clang,
+`baro.h` holds only declarations and macros and includes just `<stddef.h>` and
+`<stdint.h>`, so include the standard headers your tests use. Use the POSIX
+feature environment on Unix (GNU99 supplies it), or MSVC's C mode on Windows. Registration uses compiler constructor support: GCC, Clang,
 AppleClang, and MSVC are the supported compiler families. Freestanding targets
 are outside the current scope.
 

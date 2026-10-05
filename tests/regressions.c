@@ -1,6 +1,14 @@
 #include "baro.h"
-#ifndef _WIN32
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#define dup _dup
+#define close _close
+#else
 #include <sys/resource.h>
+#include <unistd.h>
 #endif
 
 TEST("[numeric] original types and single evaluation") {
@@ -45,15 +53,11 @@ TEST("[descriptors] repeated capture and restoration") {
     if (limit.rlim_cur > 64) limit.rlim_cur = 64;
     REQUIRE_EQ(setrlimit(RLIMIT_NOFILE, &limit), 0);
 #endif
-    for (int i = 0; i < 200; i++) {
-        baro__redirect_output(&baro__c, 0);
-        baro__redirect_output(&baro__c, 1);
-        baro__redirect_output(&baro__c, 1); // Already capturing: do not duplicate again.
-    }
-    int fd = BARO__DUP(BARO__FILENO(stdout));
-    REQUIRE_GE(fd, 0);
-    BARO__CLOSE(fd);
+    // Every failure restores and restarts capture; none may leak a descriptor.
     for (int i = 0; i < 100; i++) CHECK(0);
+    int fd = dup(1);
+    REQUIRE_GE(fd, 0);
+    close(fd);
 }
 
 TEST("[suppression] hide successful output and stderr") {
@@ -64,7 +68,7 @@ TEST("[suppression] hide successful output and stderr") {
 static void failing_test(void) { CHECK(0); }
 static struct baro__tag const many_tag = {"[many] failing test", __FILE__, __LINE__};
 BARO__INITIALIZER(register_many) {
-    for (int i = 0; i < 256; i++) baro__register_test(failing_test, &many_tag);
+    for (int i = 0; i < 256; i++) baro__register_test_kind(failing_test, &many_tag, 0);
 }
 
 #include <signal.h>
@@ -146,7 +150,7 @@ TEST("[typed] values & tolerances") {
 TEST("[typed_fail] <diagnostics> & \"escaping\"") {
     CHECK_INT_EQ(-1, 2);
     CHECK_UINT_EQ(UINT64_MAX, 0);
-    CHECK_PTR_EQ(NULL, &baro__c);
+    CHECK_PTR_EQ(NULL, &many_tag);
     CHECK_DOUBLE_EQ(1.25, 2.5);
     CHECK_NEAR(NAN, NAN, 1, 1);
     CHECK_NEAR(INFINITY, -INFINITY, 1, 1);

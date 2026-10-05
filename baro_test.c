@@ -1,4 +1,6 @@
-#include "baro.h"
+// These tests reach the runtime's internals, so they compile it directly
+// rather than linking it.
+#include "baro.c"
 
 #ifndef BARO_SELF_TEST
 #error These unit tests are for baro itself and should not be used externally
@@ -64,6 +66,16 @@ TEST("Asserts") {
     CHECK_STR_ICASE_NE("bar", "foobar", "Not equal (case insensitive)");
     REQUIRE_STR_ICASE_NE("bar", "foobar");
     REQUIRE_STR_ICASE_NE("bar", "foobar", "Not equal (case insensitive)");
+}
+
+// The runtime maintains this hash incrementally; this is the definition it
+// must agree with.
+static uint64_t baro__tag_list_hash(struct baro__tag_list *list) {
+    uint64_t hash = 0;
+    for (size_t i = 0; i < list->size; i++) {
+        hash ^= baro__tag_hash(list->tags[i], i);
+    }
+    return hash;
 }
 
 static inline void baro__tag_list_destroy(struct baro__tag_list *list) {
@@ -132,4 +144,37 @@ TEST("Tag list") {
     }
 
     baro__tag_list_destroy(&list);
+}
+
+TEST("Subtest hash is maintained incrementally") {
+    CHECK_EQ(baro__c.subtest_hash, baro__tag_list_hash(&baro__c.subtest_stack));
+    SUBTEST("outer") {
+        CHECK_EQ(baro__c.subtest_hash, baro__tag_list_hash(&baro__c.subtest_stack));
+        SUBTEST("inner") {
+            REQUIRE_EQ(baro__c.subtest_stack.size, 2);
+            CHECK_EQ(baro__c.subtest_hash, baro__tag_list_hash(&baro__c.subtest_stack));
+        }
+        CHECK_EQ(baro__c.subtest_hash, baro__tag_list_hash(&baro__c.subtest_stack));
+    }
+    CHECK_EQ(baro__c.subtest_hash, baro__tag_list_hash(&baro__c.subtest_stack));
+}
+
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
+TEST("Capture does not leak descriptors") {
+#ifndef _WIN32
+    struct rlimit limit;
+    REQUIRE_EQ(getrlimit(RLIMIT_NOFILE, &limit), 0);
+    if (limit.rlim_cur > 64) limit.rlim_cur = 64;
+    REQUIRE_EQ(setrlimit(RLIMIT_NOFILE, &limit), 0);
+#endif
+    for (int i = 0; i < 200; i++) {
+        baro__redirect_output(&baro__c, 0);
+        baro__redirect_output(&baro__c, 1);
+        baro__redirect_output(&baro__c, 1); // Already capturing: do not duplicate again.
+    }
+    int fd = BARO__DUP(BARO__FILENO(stdout));
+    REQUIRE_GE(fd, 0);
+    BARO__CLOSE(fd);
 }

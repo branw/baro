@@ -1,4 +1,6 @@
 #include <baro.h>
+#include <stdlib.h>
+#include <string.h>
 
 TEST("check fails soft") {
     CHECK(1);
