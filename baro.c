@@ -439,6 +439,7 @@ int baro_run(
     if (isolate && recover_abort) {
         fprintf(stderr, "--recover-abort is only for in-process tests\n"); return EXIT_FAILURE;
     }
+    if (ctest_mode || child_id || recover_abort) baro__report_failures_without_dialogs();
     if (ctest_mode && getenv("BARO_CTEST_RESULT")) {
         FILE *channel = fopen(getenv("BARO_CTEST_RESULT"), "wb");
         if (!channel) return EXIT_FAILURE;

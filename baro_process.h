@@ -2,6 +2,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <process.h>
+#include <crtdbg.h>
 #else
 #include <spawn.h>
 #include <sys/wait.h>
@@ -25,6 +26,20 @@ static const char *baro__executable(char *buffer, size_t size, const char *fallb
     if (length > 0 && (size_t)length < size - 1) { buffer[length] = 0; return buffer; }
 #endif
     return fallback;
+}
+
+/* Windows reports abort(), CRT errors, and crashes in modal dialogs by default.
+ * Nobody can answer one when Baro or CTest supervises the process, and the
+ * test would hang until its deadline instead of being reported. */
+static void baro__report_failures_without_dialogs(void) {
+#ifdef _WIN32
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    SetErrorMode(SetErrorMode(0) | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+#endif
 }
 
 struct baro__process {
