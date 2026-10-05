@@ -103,10 +103,16 @@ AddExampleTest(empty 1)
 AddExampleTest(tag_filtering 1 -t foo,bar)
 AddExampleTest(partitioning 1 -n 2 -p 5)
 
-# This test causes a Visual C++ Runtime Library abort() when building in MSVC..?
+AddExampleTest(assert 1 -er)
+target_compile_definitions(example_assert PRIVATE BARO_REPLACE_ASSERT)
+
+# One function with thousands of subtests, a thousand of them nested. Optimizers
+# can take minutes over it, so it is always built unoptimized, and only where
+# that flag is known. Clang also needs its nesting limit raised.
 if(NOT MSVC)
-    AddExampleTest(assert 1 -er)
-    target_compile_definitions(example_assert PRIVATE BARO_REPLACE_ASSERT)
+    AddExampleTest(stress_tests 1)
+    target_compile_options(example_stress_tests PRIVATE -O0
+        $<$<C_COMPILER_ID:Clang,AppleClang>:-fbracket-depth=4096>)
 endif()
 
 add_executable(baro_regressions tests/regressions.c)
